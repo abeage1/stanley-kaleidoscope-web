@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stanley Kaleidoscope</title>
+<style>
+*  { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #2d2d30;
+  --bg-dark: #1e1e1e;
+  --bg-mid:  #3c3c3f;
+  --text:    #dcdcdc;
+  --dim:     #888;
+  --accent:  #4682b4;
+  --border:  #3a3a3a;
+  --panel-w: 220px;
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  background: var(--bg-dark);
+  color: var(--text);
+  overflow: hidden;
+}
+
+/* ── Layout ── */
+body { display: flex; flex-direction: column; }
+
+header {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  user-select: none;
+}
+
+.app {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+aside {
+  width: var(--panel-w);
+  min-width: var(--panel-w);
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  padding: 10px 10px 16px;
+}
+
+main {
+  flex: 1;
+  position: relative;
+  background: var(--bg-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+footer {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Controls ── */
+.ctrl-group { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.ctrl-group:last-child { border-bottom: none; }
+
+button {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-mid);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: center;
+}
+button:hover:not(:disabled) { background: #505053; }
+button:active:not(:disabled) { background: var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+
+select {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--bg-mid);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lbl-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 3px;
+}
+.lbl-row span:first-child { color: var(--dim); font-size: 11px; }
+.lbl-row span:last-child  { color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+input[type=range] {
+  width: 100%;
+  height: 3px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-mid);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+input[type=range]::-moz-range-thumb {
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+.hint { color: var(--dim); font-size: 10px; text-align: center; margin-top: 2px; }
+
+/* ── Canvas / stage ── */
+#c {
+  display: block;
+  cursor: crosshair;
+  /* size set by JS */
+}
+
+.empty {
+  position: absolute;
+  text-align: center;
+  pointer-events: none;
+  color: var(--dim);
+  user-select: none;
+}
+.empty .icon { font-size: 52px; margin-bottom: 10px; }
+.empty .sub  { font-size: 11px; margin-top: 4px; }
+
+/* Drag-over highlight */
+main.drag-over::after {
+  content: 'Drop image here';
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 600;
+  color: var(--accent);
+  border: 2px dashed var(--accent);
+  background: rgba(70,130,180,.08);
+  pointer-events: none;
+}
+
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>Stanley Kaleidoscope</header>
+
+<div class="app">
+
+  <!-- ── Controls panel ── -->
+  <aside>
+
+    <div class="ctrl-group">
+      <button id="btnOpen">Open Image…</button>
+      <input type="file" id="fileIn" accept="image/*" class="hidden">
+      <button id="btnSave" disabled>Save PNG</button>
+      <button id="btnReset">Reset All</button>
+    </div>
+
+    <div class="ctrl-group">
+      <div class="lbl-row"><span>Mode</span></div>
+      <select id="mode">
+        <option value="0">Radial</option>
+        <option value="1">Rectangle</option>
+        <option value="2">Triangle 45-45-90</option>
+        <option value="3">Triangle 60-60-60</option>
+        <option value="4">Triangle 30-60-90</option>
+      </select>
+    </div>
+
+    <div class="ctrl-group">
+
+      <!-- Param 1: Segments or Tile Size -->
+      <div>
+        <div class="lbl-row">
+          <span id="lblP1">Segments</span>
+          <span id="valP1">8</span>
+        </div>
+        <input type="range" id="p1" min="2" max="24" value="8">
+      </div>
+
+      <!-- Param 2: Tile Aspect — Rectangle only -->
+      <div id="rowP2">
+        <div class="lbl-row">
+          <span>Tile Aspect</span>
+          <span id="valP2">1.00×</span>
+        </div>
+        <input type="range" id="p2" min="25" max="400" value="100">
+      </div>
+
+      <div>
+        <div class="lbl-row">
+          <span>Rotation</span>
+          <span id="valRot">0.0°</span>
+        </div>
+        <input type="range" id="rot" min="0" max="3600" value="0">
+      </div>
+
+      <div>
+        <div class="lbl-row">
+          <span>Zoom</span>
+          <span id="valZoom">1.00×</span>
+        </div>
+        <input type="range" id="zoom" min="10" max="300" value="100">
+      </div>
+
+      <div>
+        <div class="lbl-row">
+          <span>Center X</span>
+          <span id="valCX">50.0%</span>
+        </div>
+        <input type="range" id="cx" min="0" max="1000" value="500">
+      </div>
+
+      <div>
+        <div class="lbl-row">
+          <span>Center Y</span>
+          <span id="valCY">50.0%</span>
+        </div>
+        <input type="range" id="cy" min="0" max="1000" value="500">
+      </div>
+
+      <div class="hint">Click or drag the preview to set center</div>
+    </div>
+
+  </aside>
+
+  <!-- ── Preview stage ── -->
+  <main id="stage">
+    <div class="empty" id="empty">
+      <div class="icon">🔮</div>
+      <div>Open an image to start</div>
+      <div class="sub">or drag and drop here</div>
+    </div>
+    <canvas id="c" class="hidden"></canvas>
+  </main>
+
+</div>
+
+<footer id="status">Ready — open an image to start</footer>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL
+// ─────────────────────────────────────────────────────────────────────────────
+const VERT = `
+attribute vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const FRAG = `
+precision highp float;
+
+uniform sampler2D u_tex;
+uniform vec2  u_tsz;    /* texture (image) size in pixels */
+uniform vec2  u_csz;    /* canvas size in pixels          */
+uniform int   u_mode;
+uniform float u_p1;     /* segments (radial) | tile-size % (tile) */
+uniform float u_asp;    /* tile aspect ratio (rectangle only)      */
+uniform float u_rot;    /* rotation degrees */
+uniform float u_zoom;
+uniform float u_cx;     /* center X 0-100 % */
+uniform float u_cy;     /* center Y 0-100 % */
+
+const float PI     = 3.14159265358979;
+const float TWO_PI = 6.28318530717959;
+const float SQRT3  = 1.73205080757;
+
+/* Mirror tile: v → [0, period/2] */
+float fold(float v, float period) {
+  v = mod(v, period);
+  return v < period * 0.5 ? v : period - v;
+}
+
+void main() {
+  /* Map canvas pixel → image pixel (y=0 at top of image) */
+  vec2 px = vec2(
+    gl_FragCoord.x / u_csz.x * u_tsz.x,
+    (1.0 - gl_FragCoord.y / u_csz.y) * u_tsz.y
+  );
+
+  /* Centre in image pixels */
+  vec2 ctr = vec2(u_cx / 100.0 * u_tsz.x,
+                  u_cy / 100.0 * u_tsz.y);
+
+  /* Offset with zoom applied */
+  vec2 d = (px - ctr) / u_zoom;
+
+  /* Rotation */
+  float rad = radians(u_rot);
+  float c   = cos(rad), s = sin(rad);
+  d = vec2(d.x*c - d.y*s, d.x*s + d.y*c);
+
+  float mdim = min(u_tsz.x, u_tsz.y);
+  vec2 off;
+
+  if (u_mode == 0) {
+    /* ── Radial ── */
+    float r  = length(d);
+    float th = atan(d.y, d.x);
+    th = mod(th, TWO_PI);
+    float seg = TWO_PI / u_p1;
+    float tn  = mod(th, seg);
+    float h   = seg * 0.5;
+    if (tn > h) tn = seg - tn;
+    off = r * vec2(cos(tn), sin(tn));
+
+  } else if (u_mode == 1) {
+    /* ── Rectangle ── */
+    float tw = u_p1 / 100.0 * mdim;
+    float th = tw * u_asp;
+    off = vec2(fold(d.x, tw), fold(d.y, th));
+
+  } else if (u_mode == 2) {
+    /* ── Triangle 45-45-90 ── */
+    float ts = u_p1 / 100.0 * mdim;
+    float tx = fold(d.x, ts);
+    float ty = fold(d.y, ts);
+    if (tx < ty) { float t = tx; tx = ty; ty = t; }
+    off = vec2(tx, ty);
+
+  } else if (u_mode == 3) {
+    /* ── Triangle 60-60-60 (equilateral) ── */
+    float ts = u_p1 / 100.0 * mdim;
+    float vl = d.y * 2.0 / (ts * SQRT3);
+    float ul = d.x / ts - vl * 0.5;
+    float uf = fract(ul);
+    float vf = fract(vl);
+    if (uf + vf >= 1.0) {
+      float tu = 1.0 - vf;
+      vf = 1.0 - uf;
+      uf = tu;
+    }
+    off = vec2(uf * ts + vf * ts * 0.5,
+               vf * ts * SQRT3 * 0.5);
+
+  } else {
+    /* ── Triangle 30-60-90 ── */
+    float tw = u_p1 / 100.0 * mdim;
+    float th = tw * SQRT3;
+    float tx = fold(d.x, tw);
+    float ty = fold(d.y, th);
+    float A  = 2.0 / tw;
+    float B  = 2.0 / th;
+    float AB2 = A*A + B*B;
+    float dt = A*tx + B*ty - 1.0;
+    if (dt > 0.0) { tx -= 2.0*A*dt/AB2; ty -= 2.0*B*dt/AB2; }
+    off = vec2(tx, ty);
+  }
+
+  vec2 uv = clamp((ctr + off) / u_tsz, 0.0, 1.0);
+  gl_FragColor = texture2D(u_tex, uv);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebGL bootstrap
+// ─────────────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
+if (!gl) { alert('WebGL not supported in this browser.'); }
+
+function mkShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(sh));
+  return sh;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, mkShader(gl.VERTEX_SHADER,   VERT));
+gl.attachShader(prog, mkShader(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+  throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+// Fullscreen quad
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER,
+  new Float32Array([-1,-1, 1,-1, -1,1,  1,-1, 1,1, -1,1]),
+  gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+// Uniform locations
+const U = Object.fromEntries(
+  ['u_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom','u_cx','u_cy']
+  .map(n => [n, gl.getUniformLocation(prog, n)])
+);
+
+// Texture
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.uniform1i(U.u_tex, 0);
+
+let imgW = 0, imgH = 0, hasImage = false;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI refs
+// ─────────────────────────────────────────────────────────────────────────────
+const btnOpen  = document.getElementById('btnOpen');
+const btnSave  = document.getElementById('btnSave');
+const btnReset = document.getElementById('btnReset');
+const fileIn   = document.getElementById('fileIn');
+const modeEl   = document.getElementById('mode');
+const stage    = document.getElementById('stage');
+const empty    = document.getElementById('empty');
+const status   = document.getElementById('status');
+const rowP2    = document.getElementById('rowP2');
+
+const p1   = document.getElementById('p1');
+const p2   = document.getElementById('p2');
+const rot  = document.getElementById('rot');
+const zoom = document.getElementById('zoom');
+const cx   = document.getElementById('cx');
+const cy   = document.getElementById('cy');
+
+const valP1   = document.getElementById('valP1');
+const valP2   = document.getElementById('valP2');
+const valRot  = document.getElementById('valRot');
+const valZoom = document.getElementById('valZoom');
+const valCX   = document.getElementById('valCX');
+const valCY   = document.getElementById('valCY');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mode config
+// ─────────────────────────────────────────────────────────────────────────────
+const MODES = {
+  '0': { label:'Segments', min:2,  max:24,  def:8,  fmt: v => v },
+  '1': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
+  '2': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
+  '3': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
+  '4': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
+};
+
+function applyMode(mode, resetP1 = false) {
+  const m = MODES[mode];
+  document.getElementById('lblP1').textContent = m.label;
+  p1.min = m.min; p1.max = m.max;
+  if (resetP1) p1.value = m.def;
+  rowP2.classList.toggle('hidden', mode !== '1');
+  updateLabels();
+}
+
+modeEl.addEventListener('change', () => { applyMode(modeEl.value, true); render(); });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Labels
+// ─────────────────────────────────────────────────────────────────────────────
+function updateLabels() {
+  const m = MODES[modeEl.value];
+  valP1.textContent   = m.fmt(+p1.value);
+  valP2.textContent   = (+p2.value / 100).toFixed(2) + '×';
+  valRot.textContent  = (+rot.value  / 10).toFixed(1) + '°';
+  valZoom.textContent = (+zoom.value / 100).toFixed(2) + '×';
+  valCX.textContent   = (+cx.value   / 10).toFixed(1) + '%';
+  valCY.textContent   = (+cy.value   / 10).toFixed(1) + '%';
+}
+
+[p1, p2, rot, zoom, cx, cy].forEach(s => s.addEventListener('input', () => {
+  updateLabels(); render();
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────────────────────────────────────
+function render() {
+  if (!hasImage) return;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform2f(U.u_tsz,  imgW, imgH);
+  gl.uniform2f(U.u_csz,  canvas.width, canvas.height);
+  gl.uniform1i(U.u_mode, +modeEl.value);
+  gl.uniform1f(U.u_p1,   +p1.value);
+  gl.uniform1f(U.u_asp,  +p2.value / 100);
+  gl.uniform1f(U.u_rot,  +rot.value / 10);
+  gl.uniform1f(U.u_zoom, +zoom.value / 100);
+  gl.uniform1f(U.u_cx,   +cx.value  / 10);
+  gl.uniform1f(U.u_cy,   +cy.value  / 10);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canvas sizing — fit image aspect into stage
+// ─────────────────────────────────────────────────────────────────────────────
+function resizeCanvas() {
+  if (!hasImage) return;
+  const PAD = 24;
+  const aw = stage.clientWidth  - PAD;
+  const ah = stage.clientHeight - PAD;
+  const ia = imgW / imgH;
+  const aa = aw   / ah;
+  const w  = ia > aa ? aw : Math.round(ah * ia);
+  const h  = ia > aa ? Math.round(aw / ia) : ah;
+  canvas.width  = w; canvas.height = h;
+  canvas.style.width  = w + 'px';
+  canvas.style.height = h + 'px';
+  render();
+}
+window.addEventListener('resize', resizeCanvas);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Image loading
+// ─────────────────────────────────────────────────────────────────────────────
+function loadImage(file) {
+  if (!file || !file.type.startsWith('image/')) {
+    setStatus('Unsupported file type.'); return;
+  }
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    imgW = img.naturalWidth; imgH = img.naturalHeight;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    URL.revokeObjectURL(url);
+    hasImage = true;
+    canvas.classList.remove('hidden');
+    empty.classList.add('hidden');
+    btnSave.disabled = false;
+    resizeCanvas();
+    setStatus(`${file.name}  (${imgW} × ${imgH})`);
+  };
+  img.onerror = () => { setStatus('Could not load image.'); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+btnOpen.addEventListener('click', () => fileIn.click());
+fileIn.addEventListener('change', e => { if (e.target.files[0]) loadImage(e.target.files[0]); fileIn.value=''; });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Drag and drop
+// ─────────────────────────────────────────────────────────────────────────────
+stage.addEventListener('dragenter', e => { e.preventDefault(); stage.classList.add('drag-over'); });
+stage.addEventListener('dragover',  e => { e.preventDefault(); });
+stage.addEventListener('dragleave', e => { if (!stage.contains(e.relatedTarget)) stage.classList.remove('drag-over'); });
+stage.addEventListener('drop', e => {
+  e.preventDefault(); stage.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f) loadImage(f);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Click / drag canvas → set center
+// ─────────────────────────────────────────────────────────────────────────────
+let dragging = false;
+
+function setCenter(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(1, (clientX - r.left)  / r.width));
+  const y = Math.max(0, Math.min(1, (clientY - r.top)   / r.height));
+  cx.value = Math.round(x * 1000);
+  cy.value = Math.round(y * 1000);
+  updateLabels(); render();
+}
+
+canvas.addEventListener('mousedown',  e => { dragging = true;  setCenter(e.clientX, e.clientY); });
+window.addEventListener('mousemove',  e => { if (dragging) setCenter(e.clientX, e.clientY); });
+window.addEventListener('mouseup',    () => { dragging = false; });
+
+canvas.addEventListener('touchstart', e => { e.preventDefault(); dragging = true;  setCenter(e.touches[0].clientX, e.touches[0].clientY); }, { passive:false });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (dragging) setCenter(e.touches[0].clientX, e.touches[0].clientY); }, { passive:false });
+canvas.addEventListener('touchend',   () => { dragging = false; });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reset
+// ─────────────────────────────────────────────────────────────────────────────
+btnReset.addEventListener('click', () => {
+  const m = MODES[modeEl.value];
+  p1.value = m.def; p2.value = 100; rot.value = 0;
+  zoom.value = 100; cx.value = 500; cy.value = 500;
+  updateLabels(); render();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Export — re-render at full image resolution, download PNG
+// ─────────────────────────────────────────────────────────────────────────────
+btnSave.addEventListener('click', () => {
+  if (!hasImage) return;
+  setStatus('Exporting full-resolution PNG…');
+
+  const sw = canvas.width, sh = canvas.height;   // save preview size
+  canvas.width = imgW; canvas.height = imgH;      // upscale to native
+  render();
+
+  canvas.toBlob(blob => {
+    canvas.width = sw; canvas.height = sh;        // restore preview
+    render();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'kaleidoscope.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    setStatus('PNG saved.');
+  }, 'image/png');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status
+// ─────────────────────────────────────────────────────────────────────────────
+function setStatus(msg) { status.textContent = msg; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+applyMode('0');
+updateLabels();
+</script>
+</body>
+</html>
