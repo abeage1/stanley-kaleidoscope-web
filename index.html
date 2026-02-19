@@ -334,18 +334,19 @@ float fold(float v, float period) {
 }
 
 void main() {
-  /* Map canvas pixel → image pixel (y=0 at top of image) */
-  vec2 px = vec2(
-    gl_FragCoord.x / u_csz.x * u_tsz.x,
-    (1.0 - gl_FragCoord.y / u_csz.y) * u_tsz.y
-  );
-
   /* Centre in image pixels */
   vec2 ctr = vec2(u_cx / 100.0 * u_tsz.x,
                   u_cy / 100.0 * u_tsz.y);
 
-  /* Offset with zoom applied */
-  vec2 d = (px - ctr) / u_zoom;
+  /* Uniform scale: same image-pixels-per-canvas-pixel in both axes.
+     Uses the tighter-fitting axis so neither direction is stretched. */
+  float uniScale = min(u_tsz.x / u_csz.x, u_tsz.y / u_csz.y);
+
+  /* Canvas pixel → image-space offset from centre.
+     gl_FragCoord.y=0 is canvas bottom; image y=0 is top → negate y. */
+  vec2 d = vec2(
+     gl_FragCoord.x - u_csz.x * 0.5,
+    -(gl_FragCoord.y - u_csz.y * 0.5)) * uniScale / u_zoom;
 
   /* Rotation */
   float rad = radians(u_rot);
