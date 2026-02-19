@@ -549,17 +549,13 @@ function render() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Canvas sizing — fit image aspect into stage
+// Canvas sizing — fill the stage (output aspect ratio is independent of source)
 // ─────────────────────────────────────────────────────────────────────────────
 function resizeCanvas() {
   if (!hasImage) return;
   const PAD = 24;
-  const aw = stage.clientWidth  - PAD;
-  const ah = stage.clientHeight - PAD;
-  const ia = imgW / imgH;
-  const aa = aw   / ah;
-  const w  = ia > aa ? aw : Math.round(ah * ia);
-  const h  = ia > aa ? Math.round(aw / ia) : ah;
+  const w = stage.clientWidth  - PAD;
+  const h = stage.clientHeight - PAD;
   canvas.width  = w; canvas.height = h;
   canvas.style.width  = w + 'px';
   canvas.style.height = h + 'px';
@@ -660,8 +656,11 @@ btnSave.addEventListener('click', () => {
   if (!hasImage) return;
   setStatus('Exporting full-resolution PNG…');
 
-  const sw = canvas.width, sh = canvas.height;   // save preview size
-  canvas.width = imgW; canvas.height = imgH;      // upscale to native
+  // Export at canvas aspect ratio, scaled to native source resolution
+  const sw = canvas.width, sh = canvas.height;
+  const scale = Math.max(imgW, imgH) / Math.max(sw, sh);
+  canvas.width  = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
   render();
 
   canvas.toBlob(blob => {
