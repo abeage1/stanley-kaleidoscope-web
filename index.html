@@ -237,7 +237,7 @@ main.drag-over::after {
           <span id="lblP1">Segments</span>
           <span id="valP1">8</span>
         </div>
-        <input type="range" id="p1" min="2" max="24" value="8">
+        <input type="range" id="p1" min="1" max="24" value="8">
       </div>
 
       <!-- Param 2: Tile Aspect — Rectangle only -->
@@ -358,14 +358,20 @@ void main() {
 
   if (u_mode == 0) {
     /* ── Radial ── */
-    float r  = length(d);
-    float th = atan(d.y, d.x);
-    th = mod(th, TWO_PI);
-    float seg = TWO_PI / u_p1;
-    float tn  = mod(th, seg);
-    float h   = seg * 0.5;
-    if (tn > h) tn = seg - tn;
-    off = r * vec2(cos(tn), sin(tn));
+    if (u_p1 < 2.0) {
+      /* segments=1: passthrough — show original image so user can see
+         exactly what region is being sampled */
+      off = d;
+    } else {
+      float r  = length(d);
+      float th = atan(d.y, d.x);
+      th = mod(th, TWO_PI);
+      float seg = TWO_PI / u_p1;
+      float tn  = mod(th, seg);
+      float h   = seg * 0.5;
+      if (tn > h) tn = seg - tn;
+      off = r * vec2(cos(tn), sin(tn));
+    }
 
   } else if (u_mode == 1) {
     /* ── Rectangle ── */
@@ -496,7 +502,7 @@ const valCY   = document.getElementById('valCY');
 // Mode config
 // ─────────────────────────────────────────────────────────────────────────────
 const MODES = {
-  '0': { label:'Segments', min:2,  max:24,  def:8,  fmt: v => v },
+  '0': { label:'Segments', min:1,  max:24,  def:8,  fmt: v => v },
   '1': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
   '2': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
   '3': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
