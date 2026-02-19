@@ -147,6 +147,24 @@ input[type=range]::-moz-range-thumb {
 
 .hint { color: var(--dim); font-size: 10px; text-align: center; margin-top: 2px; }
 
+/* ── Sample thumbnails ── */
+.samples-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+.sample-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: .8;
+  border: 1px solid transparent;
+  display: block;
+}
+.sample-thumb:hover { opacity: 1; border-color: var(--accent); }
+
 /* ── Canvas / stage ── */
 #c {
   display: block;
@@ -193,6 +211,11 @@ main.drag-over::after {
       <input type="file" id="fileIn" accept="image/*" class="hidden">
       <button id="btnSave" disabled>Save PNG</button>
       <button id="btnReset">Reset All</button>
+    </div>
+
+    <div class="ctrl-group">
+      <div class="lbl-row"><span>Try a sample</span></div>
+      <div class="samples-grid" id="samplesGrid"></div>
     </div>
 
     <div class="ctrl-group">
@@ -547,26 +570,39 @@ window.addEventListener('resize', resizeCanvas);
 // ─────────────────────────────────────────────────────────────────────────────
 // Image loading
 // ─────────────────────────────────────────────────────────────────────────────
+
+/* Inner helper — accepts HTMLImageElement or HTMLCanvasElement */
+function _uploadToGL(img, name) {
+  imgW = img.naturalWidth  || img.width;
+  imgH = img.naturalHeight || img.height;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  hasImage = true;
+  canvas.classList.remove('hidden');
+  empty.classList.add('hidden');
+  btnSave.disabled = false;
+  resizeCanvas();
+  setStatus(name + `  (${imgW} × ${imgH})`);
+}
+
 function loadImage(file) {
   if (!file || !file.type.startsWith('image/')) {
     setStatus('Unsupported file type.'); return;
   }
   const url = URL.createObjectURL(file);
   const img = new Image();
-  img.onload = () => {
-    imgW = img.naturalWidth; imgH = img.naturalHeight;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-    URL.revokeObjectURL(url);
-    hasImage = true;
-    canvas.classList.remove('hidden');
-    empty.classList.add('hidden');
-    btnSave.disabled = false;
-    resizeCanvas();
-    setStatus(`${file.name}  (${imgW} × ${imgH})`);
-  };
+  img.onload = () => { _uploadToGL(img, file.name); URL.revokeObjectURL(url); };
   img.onerror = () => { setStatus('Could not load image.'); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+function loadImageFromUrl(url, name) {
+  setStatus('Loading…');
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload  = () => _uploadToGL(img, name);
+  img.onerror = () => setStatus('Could not load "' + name + '". Check your connection.');
   img.src = url;
 }
 
@@ -644,6 +680,88 @@ btnSave.addEventListener('click', () => {
 // Status
 // ─────────────────────────────────────────────────────────────────────────────
 function setStatus(msg) { status.textContent = msg; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sample images
+// ─────────────────────────────────────────────────────────────────────────────
+
+/* Programmatic "colorful rings" pattern — no external request needed */
+function makeSynthCanvas(size) {
+  const oc  = document.createElement('canvas');
+  oc.width  = size; oc.height = size;
+  const ctx = oc.getContext('2d');
+  const hc  = size / 2;
+
+  ctx.fillStyle = '#060a18';
+  ctx.fillRect(0, 0, size, size);
+
+  // Concentric coloured rings, outermost first so inner ones overlay
+  for (let i = 18; i >= 0; i--) {
+    const r   = size * 0.028 * (i + 1);
+    const hue = (i * 20) % 360;
+    const g   = ctx.createRadialGradient(hc, hc, r * 0.6, hc, hc, r);
+    g.addColorStop(0, `hsla(${hue},100%,65%,0)`);
+    g.addColorStop(1, `hsla(${hue}, 90%,55%,.85)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(hc, hc, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Bright white centre glow
+  const gc = ctx.createRadialGradient(hc, hc, 0, hc, hc, size * .06);
+  gc.addColorStop(0, 'rgba(255,255,255,0.95)');
+  gc.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gc;
+  ctx.fillRect(0, 0, size, size);
+
+  return oc;
+}
+
+/* Unsplash URL builders */
+function uThumb(id) {
+  return `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=120&h=120&q=60`;
+}
+function uFull(id) {
+  return `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=1600&q=80`;
+}
+
+const SAMPLES = [
+  // id=null means use the programmatic canvas
+  { id: null,           name: 'Colorful pattern' },
+  { id: '5a5i_0QasC0',  name: 'Dahlia' },
+  { id: 'WuWBdLH5qU8',  name: 'Peacock feathers' },
+  { id: 'BXRr9skWysI',  name: 'Boston at night' },
+  { id: 'tw4FCW4Gyx4',  name: 'Butterfly' },
+  { id: 'leRSmR0of84',  name: 'Forest canopy' },
+];
+
+(function buildSampleGrid() {
+  const grid = document.getElementById('samplesGrid');
+
+  SAMPLES.forEach(({ id, name }) => {
+    if (id === null) {
+      /* Synthetic canvas thumbnail */
+      const synthFull  = makeSynthCanvas(800);
+      const thumbEl    = document.createElement('canvas');
+      thumbEl.className = 'sample-thumb';
+      thumbEl.title    = name;
+      thumbEl.width    = 60; thumbEl.height = 60;
+      thumbEl.getContext('2d').drawImage(synthFull, 0, 0, 60, 60);
+      thumbEl.addEventListener('click', () => _uploadToGL(synthFull, name + '  (800 × 800)'));
+      grid.appendChild(thumbEl);
+    } else {
+      /* Unsplash thumbnail */
+      const imgEl      = document.createElement('img');
+      imgEl.className  = 'sample-thumb';
+      imgEl.title      = name;
+      imgEl.alt        = name;
+      imgEl.src        = uThumb(id);
+      imgEl.addEventListener('click', () => loadImageFromUrl(uFull(id), name));
+      grid.appendChild(imgEl);
+    }
+  });
+})();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Init
