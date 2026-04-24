@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data: https://images.unsplash.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'none'; frame-ancestors *; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<link rel="preconnect" href="https://images.unsplash.com" crossorigin>
 <title>Stanley Kaleidoscope</title>
 <style>
 *  { box-sizing: border-box; margin: 0; padding: 0; }
@@ -27,7 +30,6 @@ html, body {
   overflow: hidden;
 }
 
-/* ── Layout ── */
 body { display: flex; flex-direction: column; }
 
 header {
@@ -54,7 +56,6 @@ aside {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 0;
   overflow-y: auto;
   padding: 10px 10px 16px;
 }
@@ -81,7 +82,6 @@ footer {
   text-overflow: ellipsis;
 }
 
-/* ── Controls ── */
 .ctrl-group { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .ctrl-group:last-child { border-bottom: none; }
 
@@ -147,7 +147,6 @@ input[type=range]::-moz-range-thumb {
 
 .hint { color: var(--dim); font-size: 10px; text-align: center; margin-top: 2px; }
 
-/* ── Sample thumbnails ── */
 .samples-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -165,11 +164,9 @@ input[type=range]::-moz-range-thumb {
 }
 .sample-thumb:hover { opacity: 1; border-color: var(--accent); }
 
-/* ── Canvas / stage ── */
 #c {
   display: block;
   cursor: crosshair;
-  /* size set by JS */
 }
 
 .empty {
@@ -182,7 +179,6 @@ input[type=range]::-moz-range-thumb {
 .empty .icon { font-size: 52px; margin-bottom: 10px; }
 .empty .sub  { font-size: 11px; margin-top: 4px; }
 
-/* Drag-over highlight */
 main.drag-over::after {
   content: 'Drop image here';
   position: absolute; inset: 0;
@@ -203,14 +199,12 @@ main.drag-over::after {
 
 <div class="app">
 
-  <!-- ── Controls panel ── -->
   <aside>
-
     <div class="ctrl-group">
-      <button id="btnOpen">Open Image…</button>
+      <button id="btnOpen" data-kaleido="btn-open">Open Image…</button>
       <input type="file" id="fileIn" accept="image/*" class="hidden">
-      <button id="btnSave" disabled>Save PNG</button>
-      <button id="btnReset">Reset All</button>
+      <button id="btnSave" data-kaleido="btn-save" disabled>Save PNG</button>
+      <button id="btnReset" data-kaleido="btn-reset">Reset All</button>
     </div>
 
     <div class="ctrl-group">
@@ -220,7 +214,7 @@ main.drag-over::after {
 
     <div class="ctrl-group">
       <div class="lbl-row"><span>Mode</span></div>
-      <select id="mode">
+      <select id="mode" data-kaleido="mode">
         <option value="0">Radial</option>
         <option value="1">Rectangle</option>
         <option value="2">Triangle 45-45-90</option>
@@ -230,141 +224,162 @@ main.drag-over::after {
     </div>
 
     <div class="ctrl-group">
-
-      <!-- Param 1: Segments or Tile Size -->
       <div>
         <div class="lbl-row">
           <span id="lblP1">Segments</span>
-          <span id="valP1">8</span>
+          <span data-kaleido="val-p1">8</span>
         </div>
-        <input type="range" id="p1" min="1" max="24" value="8">
+        <input type="range" id="p1" data-kaleido="slider-p1" min="1" max="24" value="8">
       </div>
 
-      <!-- Param 2: Tile Aspect — Rectangle only -->
       <div id="rowP2">
         <div class="lbl-row">
           <span>Tile Aspect</span>
-          <span id="valP2">1.00×</span>
+          <span data-kaleido="val-p2">1.00×</span>
         </div>
-        <input type="range" id="p2" min="25" max="400" value="100">
+        <input type="range" id="p2" data-kaleido="slider-p2" min="25" max="400" value="100">
       </div>
 
       <div>
         <div class="lbl-row">
           <span>Rotation</span>
-          <span id="valRot">0.0°</span>
+          <span data-kaleido="val-rot">0.0°</span>
         </div>
-        <input type="range" id="rot" min="0" max="3600" value="0">
+        <input type="range" id="rot" data-kaleido="slider-rot" min="0" max="3600" value="0">
       </div>
 
       <div>
         <div class="lbl-row">
           <span>Zoom</span>
-          <span id="valZoom">1.00×</span>
+          <span data-kaleido="val-zoom">1.00×</span>
         </div>
-        <input type="range" id="zoom" min="10" max="300" value="100">
+        <input type="range" id="zoom" data-kaleido="slider-zoom" min="10" max="300" value="100">
       </div>
 
       <div>
         <div class="lbl-row">
           <span>Center X</span>
-          <span id="valCX">50.0%</span>
+          <span data-kaleido="val-cx">50.0%</span>
         </div>
-        <input type="range" id="cx" min="0" max="1000" value="500">
+        <input type="range" id="cx" data-kaleido="slider-cx" min="0" max="1000" value="500">
       </div>
 
       <div>
         <div class="lbl-row">
           <span>Center Y</span>
-          <span id="valCY">50.0%</span>
+          <span data-kaleido="val-cy">50.0%</span>
         </div>
-        <input type="range" id="cy" min="0" max="1000" value="500">
+        <input type="range" id="cy" data-kaleido="slider-cy" min="0" max="1000" value="500">
       </div>
 
       <div class="hint">Click or drag the preview to set center</div>
     </div>
-
   </aside>
 
-  <!-- ── Preview stage ── -->
-  <main id="stage">
+  <main id="stage" data-kaleido="stage">
     <div class="empty" id="empty">
       <div class="icon">🔮</div>
       <div>Open an image to start</div>
       <div class="sub">or drag and drop here</div>
     </div>
-    <canvas id="c" class="hidden"></canvas>
+    <canvas id="c" data-kaleido="canvas" class="hidden"></canvas>
   </main>
 
 </div>
 
 <footer id="status">Ready — open an image to start</footer>
 
+<!--
+  AGENT API — window.__kaleido
+
+  Read state:    window.__kaleido.state          → { mode, p1, p2, rot, zoom, cx, cy }
+  Set state:     window.__kaleido.setState({...patch})
+  Load image:    window.__kaleido.loadImageFromUrl(url, name)
+  Export PNG:    await window.__kaleido.exportPNG() → Blob
+  Reset:         window.__kaleido.reset()
+  Observe:       document.addEventListener('kaleido:change', e => e.detail)
+
+  URL hash state: #m=0&p1=8&p2=1&rot=45&zoom=1.5&cx=50&cy=50[&img=<url>]
+
+  When embedded as an iframe, postMessage is also accepted:
+    {type:'setState', payload:{...}, replyId?}
+    {type:'loadImage', payload:{url, name}, replyId?}
+    {type:'exportPNG', replyId}
+    {type:'getState', replyId}
+-->
+
 <script>
-// ─────────────────────────────────────────────────────────────────────────────
-// GLSL
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Config ──────────────────────────────────────────────────────────────────
+const CONFIG = {
+  stagePad: 24,
+  thumbPx: 60,
+  unsplashThumbPx: 120,
+  unsplashFullPx: 1600,
+  synthSourcePx: 800,
+  maxInputPixels: 64_000_000,  // ~8k × 8k — soft cap before GPU limits
+};
+
+// ─── GLSL ────────────────────────────────────────────────────────────────────
 const VERT = `
 attribute vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
 `;
 
 const FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
+#else
+precision mediump float;
+#endif
 
 uniform sampler2D u_tex;
-uniform vec2  u_tsz;    /* texture (image) size in pixels */
-uniform vec2  u_csz;    /* canvas size in pixels          */
+uniform vec2  u_tsz;
+uniform vec2  u_csz;
 uniform int   u_mode;
-uniform float u_p1;     /* segments (radial) | tile-size % (tile) */
-uniform float u_asp;    /* tile aspect ratio (rectangle only)      */
-uniform float u_rot;    /* rotation degrees */
+uniform float u_p1;
+uniform float u_asp;
+uniform float u_rot;
 uniform float u_zoom;
-uniform float u_cx;     /* center X 0-100 % */
-uniform float u_cy;     /* center Y 0-100 % */
+uniform float u_cx;
+uniform float u_cy;
 
 const float PI     = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
-const float SQRT3  = 1.73205080757;
+const float SQRT3  = 1.7320508075688772;
 
-/* Mirror tile: v → [0, period/2] */
 float fold(float v, float period) {
   v = mod(v, period);
   return v < period * 0.5 ? v : period - v;
 }
 
 void main() {
-  /* Centre in image pixels */
   vec2 ctr = vec2(u_cx / 100.0 * u_tsz.x,
                   u_cy / 100.0 * u_tsz.y);
 
-  /* Uniform scale: same image-pixels-per-canvas-pixel in both axes.
-     Uses the tighter-fitting axis so neither direction is stretched. */
+  // Uniform scale so neither axis is stretched.
   float uniScale = min(u_tsz.x / u_csz.x, u_tsz.y / u_csz.y);
 
-  /* Canvas pixel → image-space offset from centre.
-     gl_FragCoord.y=0 is canvas bottom; image y=0 is top → negate y. */
+  // Canvas pixel → image-space offset from centre.
+  // gl_FragCoord.y=0 is canvas bottom; image y=0 is top → negate y.
   vec2 d = vec2(
      gl_FragCoord.x - u_csz.x * 0.5,
     -(gl_FragCoord.y - u_csz.y * 0.5)) * uniScale / u_zoom;
 
-  /* Rotation */
   float rad = radians(u_rot);
   float c   = cos(rad), s = sin(rad);
   d = vec2(d.x*c - d.y*s, d.x*s + d.y*c);
 
   float mdim = min(u_tsz.x, u_tsz.y);
+  float ts   = u_p1 / 100.0 * mdim;   // tile size (unused for radial)
   vec2 off;
 
   if (u_mode == 0) {
-    /* ── Radial ── */
+    // Radial — u_p1=1 is passthrough (shows original so user can see the sampled region)
     if (u_p1 < 2.0) {
-      /* segments=1: passthrough — show original image so user can see
-         exactly what region is being sampled */
       off = d;
     } else {
-      float r  = length(d);
-      float th = atan(d.y, d.x);
+      float r   = length(d);
+      float th  = atan(d.y, d.x);
       th = mod(th, TWO_PI);
       float seg = TWO_PI / u_p1;
       float tn  = mod(th, seg);
@@ -374,22 +389,19 @@ void main() {
     }
 
   } else if (u_mode == 1) {
-    /* ── Rectangle ── */
-    float tw = u_p1 / 100.0 * mdim;
-    float th = tw * u_asp;
-    off = vec2(fold(d.x, tw), fold(d.y, th));
+    // Rectangle
+    float th = ts * u_asp;
+    off = vec2(fold(d.x, ts), fold(d.y, th));
 
   } else if (u_mode == 2) {
-    /* ── Triangle 45-45-90 ── */
-    float ts = u_p1 / 100.0 * mdim;
+    // Triangle 45-45-90
     float tx = fold(d.x, ts);
     float ty = fold(d.y, ts);
     if (tx < ty) { float t = tx; tx = ty; ty = t; }
     off = vec2(tx, ty);
 
   } else if (u_mode == 3) {
-    /* ── Triangle 60-60-60 (equilateral) ── */
-    float ts = u_p1 / 100.0 * mdim;
+    // Triangle 60-60-60 (equilateral)
     float vl = d.y * 2.0 / (ts * SQRT3);
     float ul = d.x / ts - vl * 0.5;
     float uf = fract(ul);
@@ -403,12 +415,11 @@ void main() {
                vf * ts * SQRT3 * 0.5);
 
   } else {
-    /* ── Triangle 30-60-90 ── */
-    float tw = u_p1 / 100.0 * mdim;
-    float th = tw * SQRT3;
-    float tx = fold(d.x, tw);
+    // Triangle 30-60-90
+    float th = ts * SQRT3;
+    float tx = fold(d.x, ts);
     float ty = fold(d.y, th);
-    float A  = 2.0 / tw;
+    float A  = 2.0 / ts;
     float B  = 2.0 / th;
     float AB2 = A*A + B*B;
     float dt = A*tx + B*ty - 1.0;
@@ -416,17 +427,19 @@ void main() {
     off = vec2(tx, ty);
   }
 
-  vec2 uv = clamp((ctr + off) / u_tsz, 0.0, 1.0);
+  // CLAMP_TO_EDGE on the texture handles out-of-range UVs; no extra clamp needed.
+  vec2 uv = (ctr + off) / u_tsz;
   gl_FragColor = texture2D(u_tex, uv);
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WebGL bootstrap
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── WebGL bootstrap ─────────────────────────────────────────────────────────
 const canvas = document.getElementById('c');
-const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
-if (!gl) { alert('WebGL not supported in this browser.'); }
+const gl = canvas.getContext('webgl');
+if (!gl) {
+  alert('WebGL not supported in this browser.');
+  throw new Error('WebGL unavailable');
+}
 
 function mkShader(type, src) {
   const sh = gl.createShader(type);
@@ -445,7 +458,6 @@ if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
   throw new Error(gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 
-// Fullscreen quad
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
 gl.bufferData(gl.ARRAY_BUFFER,
   new Float32Array([-1,-1, 1,-1, -1,1,  1,-1, 1,1, -1,1]),
@@ -454,13 +466,11 @@ const aPos = gl.getAttribLocation(prog, 'a_pos');
 gl.enableVertexAttribArray(aPos);
 gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
-// Uniform locations
 const U = Object.fromEntries(
   ['u_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom','u_cx','u_cy']
   .map(n => [n, gl.getUniformLocation(prog, n)])
 );
 
-// Texture
 const tex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, tex);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
@@ -469,113 +479,144 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 gl.uniform1i(U.u_tex, 0);
 
+const MAX_TEX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+const MAX_VP  = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+const MAX_VP_SIZE = Math.min(MAX_VP[0], MAX_VP[1]);
+
 let imgW = 0, imgH = 0, hasImage = false;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// UI refs
-// ─────────────────────────────────────────────────────────────────────────────
-const btnOpen  = document.getElementById('btnOpen');
-const btnSave  = document.getElementById('btnSave');
-const btnReset = document.getElementById('btnReset');
-const fileIn   = document.getElementById('fileIn');
-const modeEl   = document.getElementById('mode');
-const stage    = document.getElementById('stage');
-const empty    = document.getElementById('empty');
-const status   = document.getElementById('status');
-const rowP2    = document.getElementById('rowP2');
+// ─── DOM refs ────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const btnOpen = $('btnOpen'), btnSave = $('btnSave'), btnReset = $('btnReset');
+const fileIn = $('fileIn'), modeEl = $('mode'), stage = $('stage'), empty = $('empty');
+const statusEl = $('status'), rowP2 = $('rowP2'), lblP1 = $('lblP1');
 
-const p1   = document.getElementById('p1');
-const p2   = document.getElementById('p2');
-const rot  = document.getElementById('rot');
-const zoom = document.getElementById('zoom');
-const cx   = document.getElementById('cx');
-const cy   = document.getElementById('cy');
-
-const valP1   = document.getElementById('valP1');
-const valP2   = document.getElementById('valP2');
-const valRot  = document.getElementById('valRot');
-const valZoom = document.getElementById('valZoom');
-const valCX   = document.getElementById('valCX');
-const valCY   = document.getElementById('valCY');
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Mode config
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Mode + slider config ────────────────────────────────────────────────────
+const TILE = { label: 'Tile Size', min: 5, max: 200, def: 50, fmt: v => v + '%' };
 const MODES = {
-  '0': { label:'Segments', min:1,  max:24,  def:8,  fmt: v => v },
-  '1': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
-  '2': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
-  '3': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
-  '4': { label:'Tile Size', min:5, max:200, def:50, fmt: v => v+'%' },
+  0: { label: 'Segments', min: 1, max: 24, def: 8, fmt: v => String(v) },
+  1: { ...TILE, hasP2: true },
+  2: TILE,
+  3: TILE,
+  4: TILE,
 };
 
-function applyMode(mode, resetP1 = false) {
+// `scale` is DOM → state divisor (state in human units: degrees, ratios, percent).
+// `def` is the reset value in human units.
+const SLIDERS = {
+  p1:   { el: $('p1'),   scale: 1,   def: 8,   fmt: (v, mode) => MODES[mode].fmt(v) },
+  p2:   { el: $('p2'),   scale: 100, def: 1.00, fmt: v => v.toFixed(2) + '×' },
+  rot:  { el: $('rot'),  scale: 10,  def: 0,   fmt: v => v.toFixed(1) + '°' },
+  zoom: { el: $('zoom'), scale: 100, def: 1.00, fmt: v => v.toFixed(2) + '×' },
+  cx:   { el: $('cx'),   scale: 10,  def: 50,  fmt: v => v.toFixed(1) + '%' },
+  cy:   { el: $('cy'),   scale: 10,  def: 50,  fmt: v => v.toFixed(1) + '%' },
+};
+const SLIDER_KEYS = Object.keys(SLIDERS);
+
+// Pre-bind value label elements once.
+for (const k of SLIDER_KEYS) {
+  SLIDERS[k].valEl = document.querySelector(`[data-kaleido="val-${k}"]`);
+}
+
+// ─── State ───────────────────────────────────────────────────────────────────
+const state = { mode: 0, p1: 8, p2: 1.00, rot: 0, zoom: 1.00, cx: 50, cy: 50 };
+
+function syncStateFromDom() {
+  state.mode = parseInt(modeEl.value, 10) || 0;
+  for (const k of SLIDER_KEYS) state[k] = +SLIDERS[k].el.value / SLIDERS[k].scale;
+}
+
+function syncDomFromState() {
+  modeEl.value = String(state.mode);
+  applyModeUI(state.mode);
+  for (const k of SLIDER_KEYS) {
+    SLIDERS[k].el.value = Math.round(state[k] * SLIDERS[k].scale);
+  }
+}
+
+function applyModeUI(mode) {
   const m = MODES[mode];
-  document.getElementById('lblP1').textContent = m.label;
-  p1.min = m.min; p1.max = m.max;
-  if (resetP1) p1.value = m.def;
-  rowP2.classList.toggle('hidden', mode !== '1');
-  updateLabels();
+  lblP1.textContent = m.label;
+  SLIDERS.p1.el.min = m.min;
+  SLIDERS.p1.el.max = m.max;
+  rowP2.classList.toggle('hidden', !m.hasP2);
 }
 
-modeEl.addEventListener('change', () => { applyMode(modeEl.value, true); render(); });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Labels
-// ─────────────────────────────────────────────────────────────────────────────
 function updateLabels() {
-  const m = MODES[modeEl.value];
-  valP1.textContent   = m.fmt(+p1.value);
-  valP2.textContent   = (+p2.value / 100).toFixed(2) + '×';
-  valRot.textContent  = (+rot.value  / 10).toFixed(1) + '°';
-  valZoom.textContent = (+zoom.value / 100).toFixed(2) + '×';
-  valCX.textContent   = (+cx.value   / 10).toFixed(1) + '%';
-  valCY.textContent   = (+cy.value   / 10).toFixed(1) + '%';
+  for (const k of SLIDER_KEYS) {
+    SLIDERS[k].valEl.textContent = SLIDERS[k].fmt(state[k], state.mode);
+  }
 }
 
-[p1, p2, rot, zoom, cx, cy].forEach(s => s.addEventListener('input', () => {
-  updateLabels(); render();
-}));
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Render
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Render (pure function of state) ─────────────────────────────────────────
 function render() {
   if (!hasImage) return;
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.uniform2f(U.u_tsz,  imgW, imgH);
   gl.uniform2f(U.u_csz,  canvas.width, canvas.height);
-  gl.uniform1i(U.u_mode, +modeEl.value);
-  gl.uniform1f(U.u_p1,   +p1.value);
-  gl.uniform1f(U.u_asp,  +p2.value / 100);
-  gl.uniform1f(U.u_rot,  +rot.value / 10);
-  gl.uniform1f(U.u_zoom, +zoom.value / 100);
-  gl.uniform1f(U.u_cx,   +cx.value  / 10);
-  gl.uniform1f(U.u_cy,   +cy.value  / 10);
+  gl.uniform1i(U.u_mode, state.mode);
+  gl.uniform1f(U.u_p1,   state.p1);
+  gl.uniform1f(U.u_asp,  state.p2);
+  gl.uniform1f(U.u_rot,  state.rot);
+  gl.uniform1f(U.u_zoom, state.zoom);
+  gl.uniform1f(U.u_cx,   state.cx);
+  gl.uniform1f(U.u_cy,   state.cy);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Canvas sizing — fill the stage (output aspect ratio is independent of source)
-// ─────────────────────────────────────────────────────────────────────────────
+// rAF-coalesce all user-driven triggers so rapid scrubs / resizes
+// produce at most one draw per animation frame.
+let pending = false;
+function scheduleRender() {
+  if (pending) return;
+  pending = true;
+  requestAnimationFrame(() => {
+    pending = false;
+    syncStateFromDom();
+    updateLabels();
+    render();
+    writeStateToHash();
+    document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+  });
+}
+
+// ─── Canvas sizing ───────────────────────────────────────────────────────────
 function resizeCanvas() {
   if (!hasImage) return;
-  const PAD = 24;
-  const w = stage.clientWidth  - PAD;
-  const h = stage.clientHeight - PAD;
+  const w = stage.clientWidth  - CONFIG.stagePad;
+  const h = stage.clientHeight - CONFIG.stagePad;
   canvas.width  = w; canvas.height = h;
   canvas.style.width  = w + 'px';
   canvas.style.height = h + 'px';
-  render();
+  scheduleRender();
 }
 window.addEventListener('resize', resizeCanvas);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Image loading
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Image loading ───────────────────────────────────────────────────────────
 
-/* Inner helper — accepts HTMLImageElement or HTMLCanvasElement */
-function _uploadToGL(img, name) {
+// Downscale an oversized image/canvas via an offscreen 2D canvas
+// so we never upload a texture larger than MAX_TEXTURE_SIZE.
+function maybeDownscale(source) {
+  const w = source.naturalWidth  || source.width;
+  const h = source.naturalHeight || source.height;
+  if (w <= MAX_TEX && h <= MAX_TEX) return source;
+  const k = MAX_TEX / Math.max(w, h);
+  const dw = Math.floor(w * k), dh = Math.floor(h * k);
+  const c = document.createElement('canvas');
+  c.width = dw; c.height = dh;
+  c.getContext('2d').drawImage(source, 0, 0, dw, dh);
+  setStatus(`Downscaled to ${dw}×${dh} (GPU max ${MAX_TEX}px)`);
+  return c;
+}
+
+function uploadToGL(source, name) {
+  const rawW = source.naturalWidth  || source.width;
+  const rawH = source.naturalHeight || source.height;
+  if (rawW * rawH > CONFIG.maxInputPixels) {
+    setStatus(`Image too large: ${rawW}×${rawH} (max ${CONFIG.maxInputPixels.toLocaleString()} px).`);
+    return;
+  }
+  const img = maybeDownscale(source);
   imgW = img.naturalWidth  || img.width;
   imgH = img.naturalHeight || img.height;
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -586,112 +627,185 @@ function _uploadToGL(img, name) {
   empty.classList.add('hidden');
   btnSave.disabled = false;
   resizeCanvas();
-  setStatus(name + `  (${imgW} × ${imgH})`);
+  setStatus(`${name}  (${imgW} × ${imgH})`);
 }
 
-function loadImage(file) {
-  if (!file || !file.type.startsWith('image/')) {
-    setStatus('Unsupported file type.'); return;
-  }
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => { _uploadToGL(img, file.name); URL.revokeObjectURL(url); };
-  img.onerror = () => { setStatus('Could not load image.'); URL.revokeObjectURL(url); };
-  img.src = url;
-}
-
-function loadImageFromUrl(url, name) {
+function loadFromSrc(src, name, cleanup) {
   setStatus('Loading…');
   const img = new Image();
   img.crossOrigin = 'anonymous';
-  img.onload  = () => _uploadToGL(img, name);
-  img.onerror = () => setStatus('Could not load "' + name + '". Check your connection.');
-  img.src = url;
+  img.onload  = () => { uploadToGL(img, name); cleanup?.(); };
+  img.onerror = () => { setStatus(`Could not load "${name}".`); cleanup?.(); };
+  img.src = src;
+}
+
+function loadImageFile(file) {
+  if (!file || !file.type.startsWith('image/')) {
+    setStatus('Unsupported file type.');
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  loadFromSrc(url, file.name, () => URL.revokeObjectURL(url));
+}
+
+function loadImageFromUrl(url, name) {
+  loadFromSrc(url, name);
 }
 
 btnOpen.addEventListener('click', () => fileIn.click());
-fileIn.addEventListener('change', e => { if (e.target.files[0]) loadImage(e.target.files[0]); fileIn.value=''; });
+fileIn.addEventListener('change', e => {
+  if (e.target.files[0]) loadImageFile(e.target.files[0]);
+  fileIn.value = '';
+});
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Drag and drop
-// ─────────────────────────────────────────────────────────────────────────────
-stage.addEventListener('dragenter', e => { e.preventDefault(); stage.classList.add('drag-over'); });
-stage.addEventListener('dragover',  e => { e.preventDefault(); });
+// ─── Drag and drop ───────────────────────────────────────────────────────────
+stage.addEventListener('dragover',  e => { e.preventDefault(); stage.classList.add('drag-over'); });
 stage.addEventListener('dragleave', e => { if (!stage.contains(e.relatedTarget)) stage.classList.remove('drag-over'); });
 stage.addEventListener('drop', e => {
-  e.preventDefault(); stage.classList.remove('drag-over');
+  e.preventDefault();
+  stage.classList.remove('drag-over');
   const f = e.dataTransfer.files[0];
-  if (f) loadImage(f);
+  if (f) loadImageFile(f);
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Click / drag canvas → set center
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Click / drag canvas → set center ────────────────────────────────────────
 let dragging = false;
 
-function setCenter(clientX, clientY) {
+function setCenterFromClient(clientX, clientY) {
   const r = canvas.getBoundingClientRect();
-  const x = Math.max(0, Math.min(1, (clientX - r.left)  / r.width));
-  const y = Math.max(0, Math.min(1, (clientY - r.top)   / r.height));
-  cx.value = Math.round(x * 1000);
-  cy.value = Math.round(y * 1000);
-  updateLabels(); render();
+  const x = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+  const y = Math.max(0, Math.min(1, (clientY - r.top)  / r.height));
+  SLIDERS.cx.el.value = Math.round(x * 1000);
+  SLIDERS.cy.el.value = Math.round(y * 1000);
+  scheduleRender();
 }
 
-canvas.addEventListener('mousedown',  e => { dragging = true;  setCenter(e.clientX, e.clientY); });
-window.addEventListener('mousemove',  e => { if (dragging) setCenter(e.clientX, e.clientY); });
+canvas.addEventListener('mousedown',  e => { dragging = true;  setCenterFromClient(e.clientX, e.clientY); });
+window.addEventListener('mousemove',  e => { if (dragging) setCenterFromClient(e.clientX, e.clientY); });
 window.addEventListener('mouseup',    () => { dragging = false; });
 
-canvas.addEventListener('touchstart', e => { e.preventDefault(); dragging = true;  setCenter(e.touches[0].clientX, e.touches[0].clientY); }, { passive:false });
-canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (dragging) setCenter(e.touches[0].clientX, e.touches[0].clientY); }, { passive:false });
+canvas.addEventListener('touchstart', e => { e.preventDefault(); dragging = true;  setCenterFromClient(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (dragging) setCenterFromClient(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
 canvas.addEventListener('touchend',   () => { dragging = false; });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Reset
-// ─────────────────────────────────────────────────────────────────────────────
-btnReset.addEventListener('click', () => {
-  const m = MODES[modeEl.value];
-  p1.value = m.def; p2.value = 100; rot.value = 0;
-  zoom.value = 100; cx.value = 500; cy.value = 500;
-  updateLabels(); render();
+// ─── Slider inputs → scheduleRender ──────────────────────────────────────────
+for (const k of SLIDER_KEYS) SLIDERS[k].el.addEventListener('input', scheduleRender);
+modeEl.addEventListener('change', () => {
+  state.mode = parseInt(modeEl.value, 10) || 0;
+  applyModeUI(state.mode);
+  const m = MODES[state.mode];
+  SLIDERS.p1.el.value = m.def;
+  scheduleRender();
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Export — re-render at full image resolution, download PNG
-// ─────────────────────────────────────────────────────────────────────────────
-btnSave.addEventListener('click', () => {
-  if (!hasImage) return;
-  setStatus('Exporting full-resolution PNG…');
+// ─── Reset ───────────────────────────────────────────────────────────────────
+function resetAll() {
+  const modeDef = MODES[state.mode].def;
+  for (const k of SLIDER_KEYS) state[k] = (k === 'p1') ? modeDef : SLIDERS[k].def;
+  syncDomFromState();
+  updateLabels();
+  render();
+  writeStateToHash();
+  document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+}
+btnReset.addEventListener('click', resetAll);
 
-  // Export at canvas aspect ratio, scaled to native source resolution
-  const sw = canvas.width, sh = canvas.height;
-  const scale = Math.max(imgW, imgH) / Math.max(sw, sh);
-  canvas.width  = Math.round(sw * scale);
-  canvas.height = Math.round(sh * scale);
+// ─── Export (readPixels + 2D canvas; no preserveDrawingBuffer needed) ────────
+async function exportPNG() {
+  if (!hasImage) return null;
+  const prevW = canvas.width, prevH = canvas.height;
+  const scale = Math.max(imgW, imgH) / Math.max(prevW, prevH);
+  let w = Math.max(1, Math.round(prevW * scale));
+  let h = Math.max(1, Math.round(prevH * scale));
+  const longest = Math.max(w, h);
+  let clamped = false;
+  if (longest > MAX_VP_SIZE) {
+    const k = MAX_VP_SIZE / longest;
+    w = Math.floor(w * k); h = Math.floor(h * k);
+    clamped = true;
+  }
+  setStatus(clamped
+    ? `Exporting at ${w}×${h} (clamped to GPU max ${MAX_VP_SIZE}px)…`
+    : `Exporting full-resolution PNG…`);
+
+  // Render at export size
+  canvas.width = w; canvas.height = h;
   render();
 
-  canvas.toBlob(blob => {
-    canvas.width = sw; canvas.height = sh;        // restore preview
-    render();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'kaleidoscope.png';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    setStatus('PNG saved.');
-  }, 'image/png');
+  // Read pixels before the browser presents (works regardless of preserveDrawingBuffer)
+  const px = new Uint8ClampedArray(w * h * 4);
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+
+  // Flip Y in place (GL y-up → canvas y-down)
+  const row = w * 4;
+  const tmp = new Uint8ClampedArray(row);
+  for (let y = 0; y < (h >> 1); y++) {
+    const top = y * row, bot = (h - 1 - y) * row;
+    tmp.set(px.subarray(top, top + row));
+    px.copyWithin(top, bot, bot + row);
+    px.set(tmp, bot);
+  }
+
+  // Restore preview canvas
+  canvas.width = prevW; canvas.height = prevH;
+  render();
+
+  // Encode via 2D canvas — bulletproof across browsers
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  out.getContext('2d').putImageData(new ImageData(px, w, h), 0, 0);
+  return new Promise(resolve => out.toBlob(resolve, 'image/png'));
+}
+
+btnSave.addEventListener('click', async () => {
+  const blob = await exportPNG();
+  if (!blob) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kaleidoscope.png';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus('PNG saved.');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Status
-// ─────────────────────────────────────────────────────────────────────────────
-function setStatus(msg) { status.textContent = msg; }
+// ─── Status ──────────────────────────────────────────────────────────────────
+function setStatus(msg) { statusEl.textContent = msg; }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sample images
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── URL hash state ──────────────────────────────────────────────────────────
+let hashWriteSuppressed = false;
 
-/* Programmatic "colorful rings" pattern — no external request needed */
+function writeStateToHash() {
+  if (hashWriteSuppressed) return;
+  const params = new URLSearchParams();
+  params.set('m',    String(state.mode));
+  params.set('p1',   String(state.p1));
+  params.set('p2',   state.p2.toFixed(2));
+  params.set('rot',  state.rot.toFixed(1));
+  params.set('zoom', state.zoom.toFixed(2));
+  params.set('cx',   state.cx.toFixed(1));
+  params.set('cy',   state.cy.toFixed(1));
+  history.replaceState(null, '', '#' + params.toString());
+}
+
+function readStateFromHash() {
+  if (!location.hash) return { patch: null, img: null };
+  const params = new URLSearchParams(location.hash.slice(1));
+  const patch = {};
+  if (params.has('m')) {
+    const m = parseInt(params.get('m'), 10);
+    if (m >= 0 && m <= 4) patch.mode = m;
+  }
+  const numKeys = ['p1', 'p2', 'rot', 'zoom', 'cx', 'cy'];
+  for (const k of numKeys) {
+    if (params.has(k)) {
+      const v = parseFloat(params.get(k));
+      if (Number.isFinite(v)) patch[k] = v;
+    }
+  }
+  return { patch, img: params.get('img') };
+}
+
+// ─── Samples ─────────────────────────────────────────────────────────────────
 function makeSynthCanvas(size) {
   const oc  = document.createElement('canvas');
   oc.width  = size; oc.height = size;
@@ -701,7 +815,6 @@ function makeSynthCanvas(size) {
   ctx.fillStyle = '#060a18';
   ctx.fillRect(0, 0, size, size);
 
-  // Concentric coloured rings, outermost first so inner ones overlay
   for (let i = 18; i >= 0; i--) {
     const r   = size * 0.028 * (i + 1);
     const hue = (i * 20) % 360;
@@ -714,7 +827,6 @@ function makeSynthCanvas(size) {
     ctx.fill();
   }
 
-  // Bright white centre glow
   const gc = ctx.createRadialGradient(hc, hc, 0, hc, hc, size * .06);
   gc.addColorStop(0, 'rgba(255,255,255,0.95)');
   gc.addColorStop(1, 'rgba(255,255,255,0)');
@@ -724,56 +836,128 @@ function makeSynthCanvas(size) {
   return oc;
 }
 
-/* Unsplash URL builders */
-function uThumb(id) {
-  return `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=120&h=120&q=60`;
-}
-function uFull(id) {
-  return `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=1600&q=80`;
-}
+const uThumb = id => `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=${CONFIG.unsplashThumbPx}&h=${CONFIG.unsplashThumbPx}&q=60`;
+const uFull  = id => `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=${CONFIG.unsplashFullPx}&q=80`;
 
 const SAMPLES = [
-  // id=null means use the programmatic canvas
-  { id: null,                            name: 'Colorful pattern' },
-  { id: '1658148718098-0301ae341a3a',    name: 'Dahlia' },
-  { id: '1709377316338-a1ebc865fdd7',    name: 'Peacock feathers' },
-  { id: '1657319275886-af8b49f909e2',    name: 'Boston at night' },
-  { id: '1768508087284-f85d820d6bb3',    name: 'Butterfly' },
-  { id: '1602659676497-1329558fb487',    name: 'Forest canopy' },
+  { id: null,                         name: 'Colorful pattern' },
+  { id: '1658148718098-0301ae341a3a', name: 'Dahlia' },
+  { id: '1709377316338-a1ebc865fdd7', name: 'Peacock feathers' },
+  { id: '1657319275886-af8b49f909e2', name: 'Boston at night' },
+  { id: '1768508087284-f85d820d6bb3', name: 'Butterfly' },
+  { id: '1602659676497-1329558fb487', name: 'Forest canopy' },
 ];
 
 (function buildSampleGrid() {
-  const grid = document.getElementById('samplesGrid');
-
-  SAMPLES.forEach(({ id, name }) => {
+  const grid = $('samplesGrid');
+  for (const { id, name } of SAMPLES) {
     if (id === null) {
-      /* Synthetic canvas thumbnail */
-      const synthFull  = makeSynthCanvas(800);
-      const thumbEl    = document.createElement('canvas');
+      const synthFull = makeSynthCanvas(CONFIG.synthSourcePx);
+      const thumbEl = document.createElement('canvas');
       thumbEl.className = 'sample-thumb';
-      thumbEl.title    = name;
-      thumbEl.width    = 60; thumbEl.height = 60;
-      thumbEl.getContext('2d').drawImage(synthFull, 0, 0, 60, 60);
-      thumbEl.addEventListener('click', () => _uploadToGL(synthFull, name + '  (800 × 800)'));
+      thumbEl.title = name;
+      thumbEl.width = CONFIG.thumbPx;
+      thumbEl.height = CONFIG.thumbPx;
+      thumbEl.dataset.kaleido = 'sample';
+      thumbEl.getContext('2d').drawImage(synthFull, 0, 0, CONFIG.thumbPx, CONFIG.thumbPx);
+      thumbEl.addEventListener('click', () => uploadToGL(synthFull, `${name}  (${CONFIG.synthSourcePx} × ${CONFIG.synthSourcePx})`));
       grid.appendChild(thumbEl);
     } else {
-      /* Unsplash thumbnail */
-      const imgEl      = document.createElement('img');
-      imgEl.className  = 'sample-thumb';
-      imgEl.title      = name;
-      imgEl.alt        = name;
-      imgEl.src        = uThumb(id);
+      const imgEl = document.createElement('img');
+      imgEl.className = 'sample-thumb';
+      imgEl.title = name;
+      imgEl.alt = name;
+      imgEl.src = uThumb(id);
+      imgEl.dataset.kaleido = 'sample';
+      imgEl.dataset.sampleId = id;
+      // Warm the browser cache on hover so first click feels instant.
+      const prefetch = () => { new Image().src = uFull(id); };
+      imgEl.addEventListener('mouseenter', prefetch, { once: true });
+      imgEl.addEventListener('touchstart', prefetch, { once: true, passive: true });
       imgEl.addEventListener('click', () => loadImageFromUrl(uFull(id), name));
       grid.appendChild(imgEl);
     }
-  });
+  }
 })();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Init
-// ─────────────────────────────────────────────────────────────────────────────
-applyMode('0');
-updateLabels();
+// ─── Agent surface ───────────────────────────────────────────────────────────
+window.__kaleido = {
+  get state() { return { ...state }; },
+  setState(patch) {
+    if (!patch || typeof patch !== 'object') return;
+    let modeChanged = false;
+    if ('mode' in patch) {
+      const m = parseInt(patch.mode, 10);
+      if (m >= 0 && m <= 4 && m !== state.mode) { state.mode = m; modeChanged = true; }
+    }
+    for (const k of SLIDER_KEYS) {
+      if (k in patch) {
+        const v = +patch[k];
+        if (Number.isFinite(v)) state[k] = v;
+      }
+    }
+    if (modeChanged && !('p1' in patch)) state.p1 = MODES[state.mode].def;
+    syncDomFromState();
+    updateLabels();
+    render();
+    writeStateToHash();
+    document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+  },
+  loadImageFromUrl,
+  reset: resetAll,
+  exportPNG,
+  MODES,
+  ready: true,
+};
+
+// ─── postMessage bridge (only active when embedded) ──────────────────────────
+if (window.parent !== window) {
+  window.addEventListener('message', async e => {
+    const d = e.data;
+    if (!d || typeof d !== 'object' || !d.type) return;
+    const reply = (payload) => {
+      if (d.replyId && e.source) {
+        e.source.postMessage({ replyId: d.replyId, ...payload }, e.origin || '*');
+      }
+    };
+    try {
+      switch (d.type) {
+        case 'getState':  reply({ ok: true, state: { ...state } }); break;
+        case 'setState':  window.__kaleido.setState(d.payload); reply({ ok: true }); break;
+        case 'loadImage': window.__kaleido.loadImageFromUrl(d.payload?.url, d.payload?.name || 'image'); reply({ ok: true }); break;
+        case 'exportPNG': {
+          const blob = await exportPNG();
+          reply({ ok: true, size: blob?.size ?? 0 });
+          break;
+        }
+        default: reply({ ok: false, error: `unknown type: ${d.type}` });
+      }
+    } catch (err) {
+      reply({ ok: false, error: String(err?.message || err) });
+    }
+  });
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+(function init() {
+  // Apply mode UI first so slider ranges match.
+  applyModeUI(state.mode);
+
+  // Load state from URL hash if present (suppress hash re-write during load).
+  const { patch, img } = readStateFromHash();
+  if (patch && Object.keys(patch).length) {
+    hashWriteSuppressed = true;
+    // If the hash sets mode but not p1, use the new mode's p1 default.
+    if ('mode' in patch && !('p1' in patch)) patch.p1 = MODES[patch.mode].def;
+    Object.assign(state, patch);
+    syncDomFromState();
+    hashWriteSuppressed = false;
+  }
+  updateLabels();
+
+  // If a URL-shared image was requested, load it.
+  if (img) loadImageFromUrl(img, 'shared-image');
+})();
 </script>
 </body>
 </html>
