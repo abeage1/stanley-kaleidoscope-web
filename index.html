@@ -604,18 +604,48 @@ for (const k of SLIDER_KEYS) {
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
-const state = { mode: 0, p1: 8, p2: 1.00, rot: 0, zoom: 1.00, cx: 50, cy: 50 };
+// Non-destructive layered compositor. layers[0] is the full-canvas base
+// kaleidoscope (equivalent to today's single output); layers[1..N] are region
+// layers added in later phases. activeLayerIndex names the layer that the
+// sliders, mode picker, and drag gestures currently target.
+function defaultBaseLayer() {
+  return { kind: 'base', mode: 0, p1: 8, p2: 1.00, rot: 0, zoom: 1.00, cx: 50, cy: 50 };
+}
+
+const state = { activeLayerIndex: 0, layers: [defaultBaseLayer()] };
+
+function activeLayer() { return state.layers[state.activeLayerIndex]; }
+
+function cloneLayer(L) {
+  const out = { ...L };
+  if (L.bounds) out.bounds = { ...L.bounds };
+  return out;
+}
+
+// v1-compatible {mode, p1, p2, rot, zoom, cx, cy} view of the active layer.
+// Used by the external agent surface and the kaleido:change event payload;
+// phase 6 replaces this with the full {activeLayerIndex, layers} v2 shape.
+function flatViewOfActiveLayer() {
+  const L = activeLayer();
+  return { mode: L.mode, p1: L.p1, p2: L.p2, rot: L.rot, zoom: L.zoom, cx: L.cx, cy: L.cy };
+}
+
+function dispatchChange() {
+  document.dispatchEvent(new CustomEvent('kaleido:change', { detail: flatViewOfActiveLayer() }));
+}
 
 function syncStateFromDom() {
-  state.mode = parseInt(modeEl.value, 10) || 0;
-  for (const k of SLIDER_KEYS) state[k] = +SLIDERS[k].el.value / SLIDERS[k].scale;
+  const L = activeLayer();
+  L.mode = parseInt(modeEl.value, 10) || 0;
+  for (const k of SLIDER_KEYS) L[k] = +SLIDERS[k].el.value / SLIDERS[k].scale;
 }
 
 function syncDomFromState() {
-  modeEl.value = String(state.mode);
-  applyModeUI(state.mode);
+  const L = activeLayer();
+  modeEl.value = String(L.mode);
+  applyModeUI(L.mode);
   for (const k of SLIDER_KEYS) {
-    SLIDERS[k].el.value = Math.round(state[k] * SLIDERS[k].scale);
+    SLIDERS[k].el.value = Math.round(L[k] * SLIDERS[k].scale);
   }
 }
 
@@ -628,24 +658,14 @@ function applyModeUI(mode) {
 }
 
 function updateLabels() {
+  const L = activeLayer();
   for (const k of SLIDER_KEYS) {
-    SLIDERS[k].valEl.textContent = SLIDERS[k].fmt(state[k], state.mode);
+    SLIDERS[k].valEl.textContent = SLIDERS[k].fmt(L[k], L.mode);
   }
 }
 
 // ─── Render (pure function of state) ─────────────────────────────────────────
-// Phase 2 replaces this with state.layers directly; for now the flat state
-// serialises as a single base layer so the ping-pong pipeline has a uniform
-// input to walk.
-function buildLayers() {
-  return [{
-    kind: 'base',
-    mode: state.mode,
-    p1: state.p1, p2: state.p2,
-    rot: state.rot, zoom: state.zoom,
-    cx: state.cx, cy: state.cy,
-  }];
-}
+function buildLayers() { return state.layers; }
 
 function setMainUniformsForLayer(layer, rtW, rtH) {
   gl.uniform2f(mainU.u_tsz,  imgW, imgH);
@@ -737,7 +757,7 @@ function scheduleRender() {
     updateLabels();
     render();
     writeStateToHash();
-    document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+    dispatchChange();
   });
 }
 
@@ -901,22 +921,23 @@ window.addEventListener('blur',    () => stage.classList.remove('rotate-ready'))
 // ─── Slider inputs → scheduleRender ──────────────────────────────────────────
 for (const k of SLIDER_KEYS) SLIDERS[k].el.addEventListener('input', scheduleRender);
 modeEl.addEventListener('change', () => {
-  state.mode = parseInt(modeEl.value, 10) || 0;
-  applyModeUI(state.mode);
-  const m = MODES[state.mode];
-  SLIDERS.p1.el.value = m.def;
+  const newMode = parseInt(modeEl.value, 10) || 0;
+  applyModeUI(newMode);
+  SLIDERS.p1.el.value = MODES[newMode].def;
   scheduleRender();
 });
 
 // ─── Reset ───────────────────────────────────────────────────────────────────
+// Resets the full stack to a fresh single-base-layer state, matching the plan
+// ("resetAll creates a single-base-layer stack"). Destroys region layers.
 function resetAll() {
-  const modeDef = MODES[state.mode].def;
-  for (const k of SLIDER_KEYS) state[k] = (k === 'p1') ? modeDef : SLIDERS[k].def;
+  state.layers = [defaultBaseLayer()];
+  state.activeLayerIndex = 0;
   syncDomFromState();
   updateLabels();
   render();
   writeStateToHash();
-  document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+  dispatchChange();
 }
 btnReset.addEventListener('click', resetAll);
 
@@ -982,37 +1003,146 @@ btnSave.addEventListener('click', async () => {
 function setStatus(msg) { statusEl.textContent = msg; }
 
 // ─── URL hash state ──────────────────────────────────────────────────────────
+// Schema v2: `#a=<activeIdx>&L=<layer0>|<layer1>|...[&img=<url>]`
+// Fields inside a layer are `_`-joined; layers are `|`-joined. Underscore is
+// unambiguous with the decimal points in numeric values. Legacy v1 hashes
+// (`#m=…&p1=…`) migrate to a single-base-layer v2 stack on read.
+const FIELD_SEP = '_';
+const LAYER_SEP = '|';
 let hashWriteSuppressed = false;
+
+function fmtNum(v, decimals) {
+  if (!Number.isFinite(v)) return '0';
+  const s = (+v).toFixed(decimals);
+  return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
+}
+
+function serializeLayer(L) {
+  const parts = [];
+  if (L.kind === 'region') {
+    parts.push('r', `sh=${L.shape || 'rect'}`);
+    const b = L.bounds || { x: 0, y: 0, w: 1, h: 1 };
+    parts.push(`x=${fmtNum(b.x, 4)}`, `y=${fmtNum(b.y, 4)}`, `w=${fmtNum(b.w, 4)}`, `h=${fmtNum(b.h, 4)}`);
+    parts.push(`src=${L.source || 'prior'}`, `f=${fmtNum(L.feather || 0, 3)}`);
+  } else {
+    parts.push('b');
+  }
+  parts.push(
+    `m=${L.mode | 0}`,
+    `p1=${fmtNum(L.p1, 2)}`,
+    `p2=${fmtNum(L.p2, 2)}`,
+    `rot=${fmtNum(L.rot, 1)}`,
+    `zoom=${fmtNum(L.zoom, 2)}`,
+    `cx=${fmtNum(L.cx, 1)}`,
+    `cy=${fmtNum(L.cy, 1)}`,
+  );
+  return parts.join(FIELD_SEP);
+}
+
+function parseLayer(str) {
+  const fields = str.split(FIELD_SEP);
+  if (!fields.length) return null;
+  const tag = fields.shift();
+  const layer = tag === 'r' ? { kind: 'region' } : { kind: 'base' };
+  for (const f of fields) {
+    const eq = f.indexOf('=');
+    if (eq < 0) continue;
+    const k = f.slice(0, eq), v = f.slice(eq + 1);
+    if (k === 'sh') {
+      if (v === 'rect' || v === 'ellipse') layer.shape = v;
+    } else if (k === 'src') {
+      if (v === 'original' || v === 'prior' || v === 'crop') layer.source = v;
+    } else if (k === 'x' || k === 'y' || k === 'w' || k === 'h') {
+      if (!layer.bounds) layer.bounds = {};
+      const n = parseFloat(v);
+      if (Number.isFinite(n)) layer.bounds[k] = n;
+    } else if (k === 'f') {
+      const n = parseFloat(v);
+      if (Number.isFinite(n)) layer.feather = n;
+    } else if (k === 'm') {
+      const n = parseInt(v, 10);
+      if (n >= 0 && n <= 4) layer.mode = n;
+    } else if (k === 'p1' || k === 'p2' || k === 'rot' || k === 'zoom' || k === 'cx' || k === 'cy') {
+      const n = parseFloat(v);
+      if (Number.isFinite(n)) layer[k] = n;
+    }
+  }
+  return layer;
+}
+
+function fillLayerDefaults(L) {
+  if (!Number.isFinite(L.mode)) L.mode = 0;
+  if (!Number.isFinite(L.p1))   L.p1 = MODES[L.mode].def;
+  if (!Number.isFinite(L.p2))   L.p2 = 1.00;
+  if (!Number.isFinite(L.rot))  L.rot = 0;
+  if (!Number.isFinite(L.zoom)) L.zoom = 1.00;
+  if (!Number.isFinite(L.cx))   L.cx = 50;
+  if (!Number.isFinite(L.cy))   L.cy = 50;
+  if (L.kind === 'region') {
+    if (L.shape !== 'rect' && L.shape !== 'ellipse') L.shape = 'rect';
+    if (L.source !== 'original' && L.source !== 'prior' && L.source !== 'crop') L.source = 'prior';
+    if (!Number.isFinite(L.feather)) L.feather = 0;
+    if (!L.bounds) L.bounds = { x: 0, y: 0, w: 1, h: 1 };
+    for (const k of ['x','y','w','h']) {
+      if (!Number.isFinite(L.bounds[k])) L.bounds[k] = (k === 'w' || k === 'h') ? 1 : 0;
+    }
+  }
+}
 
 function writeStateToHash() {
   if (hashWriteSuppressed) return;
-  const params = new URLSearchParams();
-  params.set('m',    String(state.mode));
-  params.set('p1',   String(state.p1));
-  params.set('p2',   state.p2.toFixed(2));
-  params.set('rot',  state.rot.toFixed(1));
-  params.set('zoom', state.zoom.toFixed(2));
-  params.set('cx',   state.cx.toFixed(1));
-  params.set('cy',   state.cy.toFixed(1));
-  history.replaceState(null, '', '#' + params.toString());
+  const layers = state.layers.map(serializeLayer).join(LAYER_SEP);
+  history.replaceState(null, '', `#a=${state.activeLayerIndex}&L=${layers}`);
+}
+
+// Splits a raw hash body into a flat key→value map. Used for the top-level
+// fields (a, L, img); layer contents are parsed separately by parseLayer.
+function splitHashKV(raw) {
+  const out = new Map();
+  if (!raw) return out;
+  for (const kv of raw.split('&')) {
+    const eq = kv.indexOf('=');
+    if (eq < 0) out.set(kv, '');
+    else out.set(kv.slice(0, eq), decodeURIComponent(kv.slice(eq + 1)));
+  }
+  return out;
 }
 
 function readStateFromHash() {
-  if (!location.hash) return { patch: null, img: null };
-  const params = new URLSearchParams(location.hash.slice(1));
-  const patch = {};
-  if (params.has('m')) {
-    const m = parseInt(params.get('m'), 10);
-    if (m >= 0 && m <= 4) patch.mode = m;
-  }
-  const numKeys = ['p1', 'p2', 'rot', 'zoom', 'cx', 'cy'];
-  for (const k of numKeys) {
-    if (params.has(k)) {
-      const v = parseFloat(params.get(k));
-      if (Number.isFinite(v)) patch[k] = v;
+  if (!location.hash) return { state: null, img: null };
+  const raw = location.hash.slice(1);
+  const hasLayered = /(?:^|&)L=/.test(raw);
+
+  if (!hasLayered) {
+    // Legacy v1 flat hash — migrate to a single base layer.
+    const params = new URLSearchParams(raw);
+    const L = { kind: 'base' };
+    if (params.has('m')) {
+      const m = parseInt(params.get('m'), 10);
+      if (m >= 0 && m <= 4) L.mode = m;
     }
+    for (const k of ['p1','p2','rot','zoom','cx','cy']) {
+      if (params.has(k)) {
+        const v = parseFloat(params.get(k));
+        if (Number.isFinite(v)) L[k] = v;
+      }
+    }
+    fillLayerDefaults(L);
+    return { state: { activeLayerIndex: 0, layers: [L] }, img: params.get('img') };
   }
-  return { patch, img: params.get('img') };
+
+  const params = splitHashKV(raw);
+  const layers = (params.get('L') || '').split(LAYER_SEP).map(parseLayer).filter(Boolean);
+  // Invariant: layers[0] must be a base layer. Insert a default if missing.
+  if (!layers.length || layers[0].kind !== 'base') {
+    layers.unshift({ kind: 'base' });
+  }
+  for (const L of layers) fillLayerDefaults(L);
+
+  let a = parseInt(params.get('a'), 10);
+  if (!Number.isFinite(a) || a < 0 || a >= layers.length) a = 0;
+
+  return { state: { activeLayerIndex: a, layers }, img: params.get('img') || null };
 }
 
 // ─── Samples ─────────────────────────────────────────────────────────────────
@@ -1091,27 +1221,31 @@ const SAMPLES = [
 })();
 
 // ─── Agent surface ───────────────────────────────────────────────────────────
+// v1-compatible shape: state getter and setState operate on the active layer
+// as a flat {mode, p1, p2, rot, zoom, cx, cy}. Phase 6 swaps this for the v2
+// {activeLayerIndex, layers} shape and adds addRegion / removeLayer / … .
 window.__kaleido = {
-  get state() { return { ...state }; },
+  get state() { return flatViewOfActiveLayer(); },
   setState(patch) {
     if (!patch || typeof patch !== 'object') return;
+    const L = activeLayer();
     let modeChanged = false;
     if ('mode' in patch) {
       const m = parseInt(patch.mode, 10);
-      if (m >= 0 && m <= 4 && m !== state.mode) { state.mode = m; modeChanged = true; }
+      if (m >= 0 && m <= 4 && m !== L.mode) { L.mode = m; modeChanged = true; }
     }
     for (const k of SLIDER_KEYS) {
       if (k in patch) {
         const v = +patch[k];
-        if (Number.isFinite(v)) state[k] = v;
+        if (Number.isFinite(v)) L[k] = v;
       }
     }
-    if (modeChanged && !('p1' in patch)) state.p1 = MODES[state.mode].def;
+    if (modeChanged && !('p1' in patch)) L.p1 = MODES[L.mode].def;
     syncDomFromState();
     updateLabels();
     render();
     writeStateToHash();
-    document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+    dispatchChange();
   },
   loadImageFromUrl,
   reset: resetAll,
@@ -1132,7 +1266,7 @@ if (window.parent !== window) {
     };
     try {
       switch (d.type) {
-        case 'getState':  reply({ ok: true, state: { ...state } }); break;
+        case 'getState':  reply({ ok: true, state: flatViewOfActiveLayer() }); break;
         case 'setState':  window.__kaleido.setState(d.payload); reply({ ok: true }); break;
         case 'loadImage': window.__kaleido.loadImageFromUrl(d.payload?.url, d.payload?.name || 'image'); reply({ ok: true }); break;
         case 'exportPNG': {
@@ -1150,18 +1284,17 @@ if (window.parent !== window) {
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 (function init() {
-  // Apply mode UI first so slider ranges match.
-  applyModeUI(state.mode);
-
-  // Load state from URL hash if present (suppress hash re-write during load).
-  const { patch, img } = readStateFromHash();
-  if (patch && Object.keys(patch).length) {
+  // Load layered stack from URL hash if present (suppress re-write during load).
+  const { state: loaded, img } = readStateFromHash();
+  if (loaded) {
     hashWriteSuppressed = true;
-    // If the hash sets mode but not p1, use the new mode's p1 default.
-    if ('mode' in patch && !('p1' in patch)) patch.p1 = MODES[patch.mode].def;
-    Object.assign(state, patch);
+    state.activeLayerIndex = loaded.activeLayerIndex;
+    state.layers = loaded.layers;
     syncDomFromState();
     hashWriteSuppressed = false;
+  } else {
+    // Fresh boot — just mirror the default base layer into the UI.
+    syncDomFromState();
   }
   updateLabels();
 
