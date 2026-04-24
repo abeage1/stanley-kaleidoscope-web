@@ -14,7 +14,7 @@ These are intentional product decisions, not technical debt. Do not propose reve
 - **Zero runtime dependencies.** No framework, no bundler, no package manager, no CDN imports at runtime. Works entirely offline after first load.
 - **No build step.** `index.html` is the source of truth and the deploy artifact. Do not introduce Webpack, Vite, Rollup, Parcel, tsc, esbuild, a task runner, or a dev-server dependency.
 - **No TypeScript, no JSX, no transpilation.** Vanilla JS that runs directly in the browser.
-- **No test framework.** If tests become worth having, they live in `index.html` behind a `?debug=1` guard or as a separate `tests.html`, not in `node_modules`.
+- **No test framework.** If tests become worth having, they live in `index.html` behind a `?debug=1` guard or as a separate `tests.html`, not in `node_modules`. The existing `?debug=1` harness runs hash round-trip, legacy migration, and agent API mutation sanity checks in-page and overlays results.
 
 When a change tempts you toward any of the above, the right answer is almost always to write the thing more concretely in vanilla JS and keep it in `index.html`.
 

@@ -1887,6 +1887,90 @@ if (window.parent !== window) {
   // If a URL-shared image was requested, load it.
   if (img) loadImageFromUrl(img, 'shared-image');
 })();
+
+// ─── ?debug=1 test harness ───────────────────────────────────────────────────
+// Lightweight sanity tests that run in the page only when ?debug=1 is set.
+// Kept in-file per CLAUDE.md's "no test framework" rule. Covers hash round-
+// trip, legacy migration, and a mutation round-trip via the agent API.
+// Results print to console and overlay in the corner of the stage.
+if (new URLSearchParams(location.search).has('debug')) (function debug() {
+  const results = [];
+  const assert = (cond, msg) => {
+    results.push({ ok: !!cond, msg });
+    console[cond ? 'log' : 'error']('[test]', cond ? 'PASS' : 'FAIL', msg);
+  };
+  const jeq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // Hash round-trip — state serialises and parses back identically.
+  const roundTripCases = [
+    { activeLayerIndex: 0, layers: [{ kind:'base', mode:0, p1:8, p2:1, rot:0, zoom:1, cx:50, cy:50 }] },
+    { activeLayerIndex: 1, layers: [
+      { kind:'base',   mode:2, p1:75, p2:1.5, rot:45.3, zoom:1.25, cx:30.4, cy:70.9 },
+      { kind:'region', shape:'rect', bounds:{x:0.25,y:0.3,w:0.4,h:0.35},
+        source:'prior', feather:0.15,
+        mode:0, p1:6, p2:1, rot:12, zoom:1, cx:50, cy:50 }]},
+    { activeLayerIndex: 2, layers: [
+      { kind:'base',   mode:0, p1:8,  p2:1, rot:0,  zoom:1,   cx:50, cy:50 },
+      { kind:'region', shape:'ellipse', bounds:{x:0.1,y:0.1,w:0.3,h:0.3},
+        source:'original', feather:0,
+        mode:1, p1:30, p2:1, rot:0, zoom:1, cx:50, cy:50 },
+      { kind:'region', shape:'rect', bounds:{x:0.5,y:0.5,w:0.4,h:0.25},
+        source:'crop', feather:0.5,
+        mode:4, p1:20, p2:1, rot:90, zoom:1.5, cx:25, cy:75 }]},
+  ];
+  for (const [i, want] of roundTripCases.entries()) {
+    const ser = want.layers.map(serializeLayer).join(LAYER_SEP);
+    const parsed = ser.split(LAYER_SEP).map(parseLayer);
+    for (const L of parsed) fillLayerDefaults(L);
+    assert(jeq({ activeLayerIndex: want.activeLayerIndex, layers: parsed }, want),
+      `hash round-trip case ${i} (${ser.length} chars)`);
+  }
+
+  // Legacy v1 hash migration — produces a single-base-layer v2 stack.
+  const origHash = location.hash;
+  hashWriteSuppressed = true;
+  history.replaceState(null, '', '#m=2&p1=75&p2=1.5&rot=45.3&zoom=1.25&cx=30.4&cy=70.9');
+  const { state: legacy } = readStateFromHash();
+  history.replaceState(null, '', origHash || '#');
+  hashWriteSuppressed = false;
+  assert(legacy && legacy.layers.length === 1 && legacy.layers[0].kind === 'base',
+    'legacy: single base layer produced');
+  assert(legacy && legacy.layers[0].mode === 2 && legacy.layers[0].p1 === 75 && legacy.layers[0].rot === 45.3,
+    'legacy: params carry across');
+
+  // Agent API mutation round-trip — snapshot live state, exercise add/
+  // reorder/remove, restore.
+  const snapshot = cloneState();
+  const idx = window.__kaleido.addRegion({
+    shape: 'rect', bounds: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+    source: 'original', feather: 0.25,
+  });
+  assert(idx > 0 && state.layers[idx]?.kind === 'region', 'addRegion: region appended and activated');
+  assert(state.activeLayerIndex === idx, 'addRegion: new region is active');
+  window.__kaleido.removeLayer(idx);
+  assert(state.layers.length === snapshot.layers.length, 'removeLayer: length restored');
+  // Invalid bounds are rejected.
+  assert(window.__kaleido.addRegion({ shape: 'rect', bounds: { x: 0, y: 0, w: 0, h: 0.5 } }) === -1,
+    'addRegion: zero-width bounds rejected');
+  // v1 flat patch is rejected loudly — swallow the expected console.error.
+  const origErr = console.error; let v1Rejected = false;
+  console.error = (m) => { if (typeof m === 'string' && m.includes('v1 flat patches')) v1Rejected = true; };
+  window.__kaleido.setState({ mode: 3 });
+  console.error = origErr;
+  assert(v1Rejected, 'setState: v1 flat patch rejected with migration error');
+  // Restore live state (and the hash) so the user sees their original page.
+  state.activeLayerIndex = snapshot.activeLayerIndex;
+  state.layers = snapshot.layers;
+  refreshAfterMutation();
+
+  const pass = results.filter(r => r.ok).length;
+  const fail = results.length - pass;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;bottom:32px;right:10px;background:#000;color:#eee;padding:8px 10px;font:11px monospace;border:1px solid ' + (fail ? '#c66' : '#6c6') + ';z-index:9999;max-width:320px;line-height:1.4';
+  overlay.innerHTML = `<div><b>?debug=1</b>: ${pass}/${results.length} pass</div>` +
+    results.filter(r => !r.ok).map(r => `<div>✗ ${r.msg}</div>`).join('');
+  document.body.appendChild(overlay);
+})();
 </script>
 </body>
 </html>
