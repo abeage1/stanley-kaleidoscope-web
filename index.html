@@ -205,6 +205,38 @@ main.drag-over::after {
 }
 .marquee.ellipse { border-radius: 50%; }
 
+/* Layers list */
+.layers-list { display: flex; flex-direction: column; gap: 2px; }
+.layers-list:empty { display: none; }
+.layer-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: var(--bg-mid);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+.layer-row:hover { background: #4a4a4d; }
+.layer-row.active { border-color: var(--accent); background: #3d5063; }
+.layer-icon { font-size: 14px; flex-shrink: 0; }
+.layer-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.layer-row button {
+  width: 22px; height: 20px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.layer-row button:disabled { opacity: .25; cursor: default; }
+
 .hidden { display: none !important; }
 </style>
 </head>
@@ -1155,6 +1187,7 @@ function addRegionLayer(shape, bounds) {
   state.activeLayerIndex = state.layers.length - 1;
   syncDomFromState();
   updateLabels();
+  renderLayersList();
   render();
   writeStateToHash();
   dispatchChange();
@@ -1165,6 +1198,102 @@ btnAddRegion.addEventListener('click', enterPickingShape);
 btnShapeRect.addEventListener('click', () => armDraw('rect'));
 btnShapeEllipse.addEventListener('click', () => armDraw('ellipse'));
 btnCancelDraw.addEventListener('click', cancelDrawRegion);
+
+// ─── Layers list UI ──────────────────────────────────────────────────────────
+// Re-renders the sidebar layer list. Top-of-stack is shown first, matching
+// layer-panel convention in image editors. The base layer is pinned to the
+// bottom (index 0); region layers stack on top.
+const layersList = document.querySelector('[data-kaleido="layers"]');
+
+function layerLabel(L, layersArr, index) {
+  if (L.kind === 'base') return { icon: '⬛', text: 'Base' };
+  // Number by ordinal among layers of the same shape, counting from the bottom.
+  let n = 0;
+  for (let i = 1; i <= index; i++) {
+    const l = layersArr[i];
+    if (l.kind === 'region' && l.shape === L.shape) n++;
+  }
+  return L.shape === 'ellipse'
+    ? { icon: '⬭', text: 'Ellipse ' + n }
+    : { icon: '▭', text: 'Rect ' + n };
+}
+
+function renderLayersList() {
+  if (!layersList) return;
+  layersList.innerHTML = '';
+  const N = state.layers.length;
+  for (let i = N - 1; i >= 0; i--) {
+    const L = state.layers[i];
+    const isActive = i === state.activeLayerIndex;
+    const isBase = L.kind === 'base';
+    const { icon, text } = layerLabel(L, state.layers, i);
+    const row = document.createElement('div');
+    row.className = 'layer-row' + (isActive ? ' active' : '');
+    row.dataset.kaleido = 'layer-' + i;
+    row.innerHTML =
+      `<span class="layer-icon">${icon}</span>` +
+      `<span class="layer-label">${text}</span>` +
+      `<button class="layer-up"   title="Move up"   ${(isBase || i === N - 1) ? 'disabled' : ''}>↑</button>` +
+      `<button class="layer-down" title="Move down" ${(isBase || i <= 1)      ? 'disabled' : ''}>↓</button>` +
+      `<button class="layer-del"  title="Delete"    ${isBase ? 'disabled' : ''}>×</button>`;
+    row.addEventListener('click', () => setActiveLayer(i));
+    row.querySelector('.layer-up')  .addEventListener('click', (e) => { e.stopPropagation(); reorderLayer(i, i + 1); });
+    row.querySelector('.layer-down').addEventListener('click', (e) => { e.stopPropagation(); reorderLayer(i, i - 1); });
+    row.querySelector('.layer-del') .addEventListener('click', (e) => { e.stopPropagation(); removeLayer(i); });
+    layersList.appendChild(row);
+  }
+}
+
+function setActiveLayer(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= state.layers.length) return;
+  if (state.activeLayerIndex === index) return;
+  state.activeLayerIndex = index;
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  writeStateToHash();
+  dispatchChange();
+  // No render() — swapping which layer the sliders target doesn't change pixels.
+}
+
+// Move a layer from `from` to `to`, clamping so the base layer stays pinned at
+// index 0. Updates activeLayerIndex so the "current" layer follows.
+function reorderLayer(from, to) {
+  const N = state.layers.length;
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return;
+  if (from === to) return;
+  if (from <= 0 || to <= 0 || from >= N || to >= N) return;
+  const [moved] = state.layers.splice(from, 1);
+  state.layers.splice(to, 0, moved);
+  let a = state.activeLayerIndex;
+  if (a === from) a = to;
+  else if (from < a && to >= a) a--;
+  else if (from > a && to <= a) a++;
+  state.activeLayerIndex = a;
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  render();
+  writeStateToHash();
+  dispatchChange();
+}
+
+// Delete the region layer at `index`. Base layer (index 0) is not removable.
+function removeLayer(index) {
+  if (!Number.isInteger(index) || index <= 0 || index >= state.layers.length) return;
+  state.layers.splice(index, 1);
+  if (state.activeLayerIndex >= state.layers.length) {
+    state.activeLayerIndex = state.layers.length - 1;
+  } else if (state.activeLayerIndex > index) {
+    state.activeLayerIndex--;
+  }
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  render();
+  writeStateToHash();
+  dispatchChange();
+}
 
 // ─── Slider inputs → scheduleRender ──────────────────────────────────────────
 for (const k of SLIDER_KEYS) SLIDERS[k].el.addEventListener('input', scheduleRender);
@@ -1183,6 +1312,7 @@ function resetAll() {
   state.activeLayerIndex = 0;
   syncDomFromState();
   updateLabels();
+  renderLayersList();
   render();
   writeStateToHash();
   dispatchChange();
@@ -1545,6 +1675,7 @@ if (window.parent !== window) {
     syncDomFromState();
   }
   updateLabels();
+  renderLayersList();
 
   // If a URL-shared image was requested, load it.
   if (img) loadImageFromUrl(img, 'shared-image');
