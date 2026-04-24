@@ -321,12 +321,31 @@ const CONFIG = {
   unsplashFullPx: 1600,
   synthSourcePx: 800,
   maxInputPixels: 64_000_000,  // ~8k × 8k — soft cap before GPU limits
+  maxFboSize: 4096,            // per-axis cap for ping-pong render targets (VRAM budget)
 };
 
 // ─── GLSL ────────────────────────────────────────────────────────────────────
 const VERT = `
 attribute vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+// Trivial pass-through blit: samples the final ping-pong FBO into the default
+// framebuffer. Derives uv from clip-space a_pos so no extra uniforms are needed.
+const BLIT_VERT = `
+attribute vec2 a_pos;
+varying   vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+
+const BLIT_FRAG = `
+precision mediump float;
+uniform sampler2D u_tex;
+varying   vec2 v_uv;
+void main() { gl_FragColor = texture2D(u_tex, v_uv); }
 `;
 
 const FRAG = `
@@ -454,26 +473,39 @@ function mkShader(type, src) {
   return sh;
 }
 
-const prog = gl.createProgram();
-gl.attachShader(prog, mkShader(gl.VERTEX_SHADER,   VERT));
-gl.attachShader(prog, mkShader(gl.FRAGMENT_SHADER, FRAG));
-gl.linkProgram(prog);
-if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
-  throw new Error(gl.getProgramInfoLog(prog));
-gl.useProgram(prog);
+// Build a program and force a_pos to attribute location 0 before linking, so a
+// single enableVertexAttribArray / vertexAttribPointer setup serves every program.
+function mkProgram(vsrc, fsrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, mkShader(gl.VERTEX_SHADER,   vsrc));
+  gl.attachShader(p, mkShader(gl.FRAGMENT_SHADER, fsrc));
+  gl.bindAttribLocation(p, 0, 'a_pos');
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+const mainProg = mkProgram(VERT, FRAG);
+const blitProg = mkProgram(BLIT_VERT, BLIT_FRAG);
+
+const mainU = Object.fromEntries(
+  ['u_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom','u_cx','u_cy']
+  .map(n => [n, gl.getUniformLocation(mainProg, n)])
+);
+const blitU = { u_tex: gl.getUniformLocation(blitProg, 'u_tex') };
+
+// Samplers are set once per program — both read from TEXTURE0 (the active
+// binding changes between the source image and the ping-pong FBO textures).
+gl.useProgram(mainProg); gl.uniform1i(mainU.u_tex, 0);
+gl.useProgram(blitProg); gl.uniform1i(blitU.u_tex, 0);
 
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
 gl.bufferData(gl.ARRAY_BUFFER,
   new Float32Array([-1,-1, 1,-1, -1,1,  1,-1, 1,1, -1,1]),
   gl.STATIC_DRAW);
-const aPos = gl.getAttribLocation(prog, 'a_pos');
-gl.enableVertexAttribArray(aPos);
-gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-const U = Object.fromEntries(
-  ['u_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom','u_cx','u_cy']
-  .map(n => [n, gl.getUniformLocation(prog, n)])
-);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
 const tex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -481,11 +513,60 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-gl.uniform1i(U.u_tex, 0);
 
 const MAX_TEX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
 const MAX_VP  = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
 const MAX_VP_SIZE = Math.min(MAX_VP[0], MAX_VP[1]);
+
+// ─── Ping-pong FBOs ──────────────────────────────────────────────────────────
+// Two framebuffer-backed textures used to composite the layer stack. Each
+// non-base pass reads the previous composite and writes the next. The final
+// FBO is blitted to the default framebuffer; this keeps the export path's
+// preserveDrawingBuffer=false invariant unchanged.
+let fboA = null, fboB = null, fboW = 0, fboH = 0;
+
+function createFBO(w, h) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (!complete) { gl.deleteTexture(t); gl.deleteFramebuffer(f); return null; }
+  return { fbo: f, tex: t, w, h };
+}
+
+function deleteFBO(x) {
+  if (!x) return;
+  gl.deleteTexture(x.tex);
+  gl.deleteFramebuffer(x.fbo);
+}
+
+// Allocate / resize FBOs to cover the requested render size, clamped so we
+// never blow past the GPU's texture limit or our VRAM budget. Returns false if
+// allocation fails — render() then falls back to the single-pass direct path.
+function ensureFBOs(wantW, wantH) {
+  const cap = Math.min(MAX_TEX, CONFIG.maxFboSize);
+  const tw = Math.max(1, Math.min(wantW, cap));
+  const th = Math.max(1, Math.min(wantH, cap));
+  if (fboA && fboB && fboW === tw && fboH === th) return true;
+  deleteFBO(fboA); deleteFBO(fboB);
+  fboA = createFBO(tw, th);
+  fboB = createFBO(tw, th);
+  if (!fboA || !fboB) {
+    deleteFBO(fboA); deleteFBO(fboB);
+    fboA = fboB = null; fboW = fboH = 0;
+    return false;
+  }
+  fboW = tw; fboH = th;
+  return true;
+}
 
 let imgW = 0, imgH = 0, hasImage = false;
 
@@ -553,18 +634,94 @@ function updateLabels() {
 }
 
 // ─── Render (pure function of state) ─────────────────────────────────────────
+// Phase 2 replaces this with state.layers directly; for now the flat state
+// serialises as a single base layer so the ping-pong pipeline has a uniform
+// input to walk.
+function buildLayers() {
+  return [{
+    kind: 'base',
+    mode: state.mode,
+    p1: state.p1, p2: state.p2,
+    rot: state.rot, zoom: state.zoom,
+    cx: state.cx, cy: state.cy,
+  }];
+}
+
+function setMainUniformsForLayer(layer, rtW, rtH) {
+  gl.uniform2f(mainU.u_tsz,  imgW, imgH);
+  gl.uniform2f(mainU.u_csz,  rtW, rtH);
+  gl.uniform1i(mainU.u_mode, layer.mode);
+  gl.uniform1f(mainU.u_p1,   layer.p1);
+  gl.uniform1f(mainU.u_asp,  layer.p2);
+  gl.uniform1f(mainU.u_rot,  layer.rot);
+  gl.uniform1f(mainU.u_zoom, layer.zoom);
+  gl.uniform1f(mainU.u_cx,   layer.cx);
+  gl.uniform1f(mainU.u_cy,   layer.cy);
+}
+
+// Fallback when FBO allocation fails: single-pass render straight to the
+// default framebuffer. Produces the same output as the pre-pipeline code for
+// a base-only stack and silently drops any region layers above it (the caller
+// surfaces a user-visible status line).
+function renderBaseDirect(layer) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(mainProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  setMainUniformsForLayer(layer, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+let fboFallbackWarned = false;
+
 function render() {
   if (!hasImage) return;
+  const layers = buildLayers();
+
+  // Base-only output at a canvas larger than the FBO cap skips the pipeline so
+  // the main shader can render directly at full resolution — preserves export
+  // fidelity for 4K+ images. Once region layers exist, the FBO path is
+  // mandatory and any necessary downscale is surfaced in the status bar.
+  const fboCap = Math.min(MAX_TEX, CONFIG.maxFboSize);
+  const exceedsCap = canvas.width > fboCap || canvas.height > fboCap;
+  const baseOnly = layers.length === 1 && layers[0].kind === 'base';
+  if (baseOnly && exceedsCap) {
+    renderBaseDirect(layers[0]);
+    return;
+  }
+
+  if (!ensureFBOs(canvas.width, canvas.height)) {
+    renderBaseDirect(layers[0]);
+    if (!fboFallbackWarned) {
+      setStatus('FBO allocation failed — reduced render path (base layer only).');
+      fboFallbackWarned = true;
+    }
+    return;
+  }
+
+  // Walk the stack: each pass writes to `dst`; after the pass, `src` holds the
+  // freshly-rendered composite and dst flips to the other FBO for the next.
+  let dst = fboA, src = null;
+  for (let i = 0; i < layers.length; i++) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, fboW, fboH);
+    gl.useProgram(mainProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    setMainUniformsForLayer(layers[i], fboW, fboH);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    src = dst;
+    dst = (dst === fboA) ? fboB : fboA;
+  }
+
+  // Blit the last-written FBO to the visible canvas. At preview sizes FBO ==
+  // canvas so this is a 1:1 LINEAR sample at pixel centres (bit-identical).
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.uniform2f(U.u_tsz,  imgW, imgH);
-  gl.uniform2f(U.u_csz,  canvas.width, canvas.height);
-  gl.uniform1i(U.u_mode, state.mode);
-  gl.uniform1f(U.u_p1,   state.p1);
-  gl.uniform1f(U.u_asp,  state.p2);
-  gl.uniform1f(U.u_rot,  state.rot);
-  gl.uniform1f(U.u_zoom, state.zoom);
-  gl.uniform1f(U.u_cx,   state.cx);
-  gl.uniform1f(U.u_cy,   state.cy);
+  gl.useProgram(blitProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, src.tex);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
