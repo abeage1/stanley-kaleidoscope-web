@@ -930,8 +930,6 @@ function renderBaseDirect(layer) {
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
-let fboFallbackWarned = false;
-
 function render() {
   if (!hasImage) return;
   const layers = buildLayers();
@@ -950,10 +948,10 @@ function render() {
 
   if (!ensureFBOs(canvas.width, canvas.height)) {
     renderBaseDirect(layers[0]);
-    if (!fboFallbackWarned) {
-      setStatus('FBO allocation failed — reduced render path (base layer only).');
-      fboFallbackWarned = true;
-    }
+    const dropped = layers.length - 1;
+    setStatus(dropped > 0
+      ? `FBO allocation failed — base layer only (${dropped} region${dropped > 1 ? 's' : ''} dropped).`
+      : 'FBO allocation failed — reduced render path.');
     return;
   }
 
@@ -1472,9 +1470,18 @@ async function exportPNG() {
     w = Math.floor(w * k); h = Math.floor(h * k);
     clamped = true;
   }
-  setStatus(clamped
-    ? `Exporting at ${w}×${h} (clamped to GPU max ${MAX_VP_SIZE}px)…`
-    : `Exporting full-resolution PNG…`);
+  const N = state.layers.length;
+  const fboCap = Math.min(MAX_TEX, CONFIG.maxFboSize);
+  // The pipeline downscales only when region layers force the FBO path AND
+  // the export target exceeds the FBO cap. Base-only renders bypass FBOs
+  // (see render()) and keep native resolution.
+  const fboClamped = N > 1 && (w > fboCap || h > fboCap);
+  const parts = [`Exporting ${N > 1 ? N + ' layers ' : ''}at ${w}×${h}`];
+  const notes = [];
+  if (clamped)    notes.push(`GPU max ${MAX_VP_SIZE}px`);
+  if (fboClamped) notes.push(`FBO ${fboCap}px`);
+  if (notes.length) parts.push('(' + notes.join('; ') + ')');
+  setStatus(parts.join(' ') + '…');
 
   // Render at export size
   canvas.width = w; canvas.height = h;
@@ -1513,7 +1520,8 @@ btnSave.addEventListener('click', async () => {
   a.download = 'kaleidoscope.png';
   a.click();
   URL.revokeObjectURL(a.href);
-  setStatus('PNG saved.');
+  const N = state.layers.length;
+  setStatus(`PNG saved${N > 1 ? ` (${N} layers)` : ''}.`);
 });
 
 // ─── Status ──────────────────────────────────────────────────────────────────
