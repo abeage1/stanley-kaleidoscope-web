@@ -191,6 +191,20 @@ main.drag-over::after {
   pointer-events: none;
 }
 
+/* Region drawing */
+.shape-picker { display: flex; gap: 4px; }
+.shape-picker button { flex: 1; padding: 6px 4px; }
+#stage.drawing-region,
+#stage.drawing-region #c { cursor: crosshair; }
+.marquee {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: rgba(70,130,180,.10);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.marquee.ellipse { border-radius: 50%; }
+
 .hidden { display: none !important; }
 </style>
 </head>
@@ -211,6 +225,17 @@ main.drag-over::after {
     <div class="ctrl-group">
       <div class="lbl-row"><span>Try a sample</span></div>
       <div class="samples-grid" id="samplesGrid"></div>
+    </div>
+
+    <div class="ctrl-group">
+      <div class="lbl-row"><span>Layers</span></div>
+      <div class="layers-list" data-kaleido="layers"></div>
+      <button id="btnAddRegion" data-kaleido="btnAddRegion" disabled>+ Region</button>
+      <div class="shape-picker hidden" id="shapePicker">
+        <button id="btnShapeRect"    data-kaleido="btnShapeRect">Rect</button>
+        <button id="btnShapeEllipse" data-kaleido="btnShapeEllipse">Ellipse</button>
+        <button id="btnCancelDraw"   data-kaleido="btnCancelDraw">Cancel</button>
+      </div>
     </div>
 
     <div class="ctrl-group">
@@ -322,6 +347,7 @@ const CONFIG = {
   synthSourcePx: 800,
   maxInputPixels: 64_000_000,  // ~8k × 8k — soft cap before GPU limits
   maxFboSize: 4096,            // per-axis cap for ping-pong render targets (VRAM budget)
+  minRegionFraction: 0.02,     // minimum rect/ellipse extent as a fraction of canvas
 };
 
 // ─── GLSL ────────────────────────────────────────────────────────────────────
@@ -356,6 +382,7 @@ precision mediump float;
 #endif
 
 uniform sampler2D u_tex;
+uniform sampler2D u_prev_tex;    // previous composite (unused when region_kind=0)
 uniform vec2  u_tsz;
 uniform vec2  u_csz;
 uniform int   u_mode;
@@ -365,6 +392,8 @@ uniform float u_rot;
 uniform float u_zoom;
 uniform float u_cx;
 uniform float u_cy;
+uniform int   u_region_kind;     // 0 base, 1 rect, 2 ellipse
+uniform vec4  u_region;          // x, y, w, h in canvas UV (0..1, y-down)
 
 const float PI     = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
@@ -452,7 +481,34 @@ void main() {
 
   // CLAMP_TO_EDGE on the texture handles out-of-range UVs; no extra clamp needed.
   vec2 uv = (ctr + off) / u_tsz;
-  gl_FragColor = texture2D(u_tex, uv);
+  vec4 tiled = texture2D(u_tex, uv);
+
+  if (u_region_kind == 0) {
+    gl_FragColor = tiled;
+  } else {
+    // Compose this layer's kaleidoscope inside its region with the prior
+    // composite showing through outside. u_region bounds are stored in
+    // canvas UV with origin top-left (matching the marquee drag); gl_FragCoord
+    // is y-up, so we flip y for the region check but keep the prev_tex sample
+    // in native y-up space.
+    vec2 frag_uv = gl_FragCoord.xy / u_csz;
+    vec2 chk = vec2(frag_uv.x, 1.0 - frag_uv.y);
+    float m;
+    if (u_region_kind == 1) {
+      vec2 rmin = u_region.xy;
+      vec2 rmax = u_region.xy + u_region.zw;
+      bool inside = (chk.x >= rmin.x && chk.x <= rmax.x &&
+                     chk.y >= rmin.y && chk.y <= rmax.y);
+      m = inside ? 1.0 : 0.0;
+    } else {
+      vec2 centre = u_region.xy + u_region.zw * 0.5;
+      vec2 halfExt = u_region.zw * 0.5;
+      vec2 d2 = (chk - centre) / halfExt;
+      m = (dot(d2, d2) <= 1.0) ? 1.0 : 0.0;
+    }
+    vec4 backdrop = texture2D(u_prev_tex, frag_uv);
+    gl_FragColor = mix(backdrop, tiled, m);
+  }
 }
 `;
 
@@ -490,14 +546,18 @@ const mainProg = mkProgram(VERT, FRAG);
 const blitProg = mkProgram(BLIT_VERT, BLIT_FRAG);
 
 const mainU = Object.fromEntries(
-  ['u_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom','u_cx','u_cy']
+  ['u_tex','u_prev_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom',
+   'u_cx','u_cy','u_region_kind','u_region']
   .map(n => [n, gl.getUniformLocation(mainProg, n)])
 );
 const blitU = { u_tex: gl.getUniformLocation(blitProg, 'u_tex') };
 
-// Samplers are set once per program — both read from TEXTURE0 (the active
-// binding changes between the source image and the ping-pong FBO textures).
-gl.useProgram(mainProg); gl.uniform1i(mainU.u_tex, 0);
+// Samplers are set once per program. Main reads the source image from
+// TEXTURE0 and the prior composite (for region layers) from TEXTURE1; the
+// blit program reads the final FBO from TEXTURE0.
+gl.useProgram(mainProg);
+gl.uniform1i(mainU.u_tex, 0);
+gl.uniform1i(mainU.u_prev_tex, 1);
 gl.useProgram(blitProg); gl.uniform1i(blitU.u_tex, 0);
 
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -575,6 +635,8 @@ const $ = (id) => document.getElementById(id);
 const btnOpen = $('btnOpen'), btnSave = $('btnSave'), btnReset = $('btnReset');
 const fileIn = $('fileIn'), modeEl = $('mode'), stage = $('stage'), empty = $('empty');
 const statusEl = $('status'), rowP2 = $('rowP2'), lblP1 = $('lblP1');
+const btnAddRegion = $('btnAddRegion'), shapePicker = $('shapePicker');
+const btnShapeRect = $('btnShapeRect'), btnShapeEllipse = $('btnShapeEllipse'), btnCancelDraw = $('btnCancelDraw');
 
 // ─── Mode + slider config ────────────────────────────────────────────────────
 const TILE = { label: 'Tile Size', min: 5, max: 200, def: 50, fmt: v => v + '%' };
@@ -677,6 +739,15 @@ function setMainUniformsForLayer(layer, rtW, rtH) {
   gl.uniform1f(mainU.u_zoom, layer.zoom);
   gl.uniform1f(mainU.u_cx,   layer.cx);
   gl.uniform1f(mainU.u_cy,   layer.cy);
+  if (layer.kind === 'region' && layer.bounds) {
+    const kind = layer.shape === 'ellipse' ? 2 : 1;
+    const b = layer.bounds;
+    gl.uniform1i(mainU.u_region_kind, kind);
+    gl.uniform4f(mainU.u_region, b.x, b.y, b.w, b.h);
+  } else {
+    gl.uniform1i(mainU.u_region_kind, 0);
+    gl.uniform4f(mainU.u_region, 0, 0, 0, 0);
+  }
 }
 
 // Fallback when FBO allocation fails: single-pass render straight to the
@@ -722,6 +793,7 @@ function render() {
 
   // Walk the stack: each pass writes to `dst`; after the pass, `src` holds the
   // freshly-rendered composite and dst flips to the other FBO for the next.
+  // Non-base layers also sample the prior composite from TEXTURE1 as backdrop.
   let dst = fboA, src = null;
   for (let i = 0; i < layers.length; i++) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
@@ -729,6 +801,10 @@ function render() {
     gl.useProgram(mainProg);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (i > 0) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    }
     setMainUniformsForLayer(layers[i], fboW, fboH);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     src = dst;
@@ -807,6 +883,7 @@ function uploadToGL(source, name) {
   canvas.classList.remove('hidden');
   empty.classList.add('hidden');
   btnSave.disabled = false;
+  btnAddRegion.disabled = false;
   resizeCanvas();
   setStatus(`${name}  (${imgW} × ${imgH})`);
 }
@@ -900,23 +977,194 @@ function endDrag() {
   rotAnchor = null;
 }
 
-canvas.addEventListener('mousedown', e => beginDrag(e.clientX, e.clientY, e.shiftKey));
-window.addEventListener('mousemove', e => { if (dragMode) continueDrag(e.clientX, e.clientY); });
-window.addEventListener('mouseup',   endDrag);
-// Defensive: drop the gesture if the window loses focus mid-drag so a stale
-// anchor can't carry over.
-window.addEventListener('blur',      endDrag);
+canvas.addEventListener('mousedown', e => {
+  if (drawMode === 'armed') { beginDrawRegion(e.clientX, e.clientY); return; }
+  beginDrag(e.clientX, e.clientY, e.shiftKey);
+});
+window.addEventListener('mousemove', e => {
+  if (drawMode === 'drawing') { continueDrawRegion(e.clientX, e.clientY); return; }
+  if (dragMode) continueDrag(e.clientX, e.clientY);
+});
+window.addEventListener('mouseup', () => {
+  if (drawMode === 'drawing') { endDrawRegion(); return; }
+  endDrag();
+});
+// Defensive: drop any in-flight gesture if the window loses focus.
+window.addEventListener('blur', () => { endDrag(); if (drawMode === 'drawing') cancelDrawRegion(); });
 
-// Touch has no shift modifier, so touch drag always sets center.
-canvas.addEventListener('touchstart', e => { e.preventDefault(); beginDrag(e.touches[0].clientX, e.touches[0].clientY, false); }, { passive: false });
-canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (dragMode) continueDrag(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
-canvas.addEventListener('touchend',   endDrag);
-canvas.addEventListener('touchcancel', endDrag);
+// Touch has no shift modifier, so touch drag always sets center (or draws a
+// region when drawMode is armed).
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  if (drawMode === 'armed') { beginDrawRegion(t.clientX, t.clientY); return; }
+  beginDrag(t.clientX, t.clientY, false);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  if (drawMode === 'drawing') { continueDrawRegion(t.clientX, t.clientY); return; }
+  if (dragMode) continueDrag(t.clientX, t.clientY);
+}, { passive: false });
+canvas.addEventListener('touchend', () => {
+  if (drawMode === 'drawing') { endDrawRegion(); return; }
+  endDrag();
+});
+canvas.addEventListener('touchcancel', () => {
+  if (drawMode === 'drawing') cancelDrawRegion();
+  else endDrag();
+});
 
-// Shift-held cursor affordance on the stage.
-window.addEventListener('keydown', e => { if (e.key === 'Shift') stage.classList.add('rotate-ready'); });
+// Shift-held cursor affordance on the stage. Suppressed while drawing a region
+// so the crosshair cursor and shift-rotate affordance don't fight each other.
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && drawMode) { cancelDrawRegion(); return; }
+  if (e.key === 'Shift' && !drawMode) stage.classList.add('rotate-ready');
+});
 window.addEventListener('keyup',   e => { if (e.key === 'Shift') stage.classList.remove('rotate-ready'); });
 window.addEventListener('blur',    () => stage.classList.remove('rotate-ready'));
+
+// ─── Region drawing ──────────────────────────────────────────────────────────
+// State machine:
+//   null → 'picking-shape' (after "+ Region" click)
+//        → 'armed' (after shape chosen; cursor crosshair; next canvas pointerdown
+//                   starts drawing)
+//        → 'drawing' (pointerdown→pointerup; marquee tracks the pointer)
+//        → null (pointerup creates region layer; or Cancel/Escape returns to null)
+// Sliders and drag gestures are suppressed while drawMode is non-null.
+let drawMode = null;   // null | 'picking-shape' | 'armed' | 'drawing'
+let drawShape = null;  // 'rect' | 'ellipse'
+let drawAnchor = null; // { x, y } in canvas pixels (top-left origin)
+let drawLatest = null; // { x, y } current pointer in canvas pixels
+let marqueeEl = null;
+
+function setDrawMode(next) {
+  drawMode = next;
+  if (next === 'armed' || next === 'drawing') {
+    stage.classList.add('drawing-region');
+    stage.classList.remove('rotate-ready');
+  } else {
+    stage.classList.remove('drawing-region');
+  }
+}
+
+function showShapePicker(show) {
+  shapePicker.classList.toggle('hidden', !show);
+  btnAddRegion.classList.toggle('hidden', show);
+}
+
+function enterPickingShape() {
+  if (!hasImage) return;
+  showShapePicker(true);
+  setDrawMode('picking-shape');
+}
+
+function armDraw(shape) {
+  drawShape = shape;
+  setDrawMode('armed');
+  setStatus(`Draw ${shape === 'ellipse' ? 'an ellipse' : 'a rectangle'} on the canvas — press Escape to cancel.`);
+}
+
+function cancelDrawRegion() {
+  if (marqueeEl) { marqueeEl.remove(); marqueeEl = null; }
+  drawAnchor = drawLatest = null;
+  drawShape = null;
+  showShapePicker(false);
+  setDrawMode(null);
+  setStatus('');
+}
+
+function canvasPixelFromClient(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(r.width,  clientX - r.left)),
+    y: Math.max(0, Math.min(r.height, clientY - r.top)),
+  };
+}
+
+function beginDrawRegion(clientX, clientY) {
+  const p = canvasPixelFromClient(clientX, clientY);
+  drawAnchor = p;
+  drawLatest = p;
+  setDrawMode('drawing');
+  // Marquee lives inside #stage so it can be positioned relative to the canvas.
+  marqueeEl = document.createElement('div');
+  marqueeEl.className = 'marquee' + (drawShape === 'ellipse' ? ' ellipse' : '');
+  marqueeEl.dataset.kaleido = 'marquee';
+  stage.appendChild(marqueeEl);
+  updateMarquee();
+}
+
+function continueDrawRegion(clientX, clientY) {
+  if (!drawAnchor) return;
+  drawLatest = canvasPixelFromClient(clientX, clientY);
+  updateMarquee();
+}
+
+function updateMarquee() {
+  if (!marqueeEl || !drawAnchor || !drawLatest) return;
+  const r = canvas.getBoundingClientRect();
+  const stageR = stage.getBoundingClientRect();
+  // Convert canvas-pixel coords back to stage-relative for positioning.
+  const leftPx   = r.left - stageR.left + Math.min(drawAnchor.x, drawLatest.x);
+  const topPx    = r.top  - stageR.top  + Math.min(drawAnchor.y, drawLatest.y);
+  const widthPx  = Math.abs(drawLatest.x - drawAnchor.x);
+  const heightPx = Math.abs(drawLatest.y - drawAnchor.y);
+  marqueeEl.style.left   = leftPx   + 'px';
+  marqueeEl.style.top    = topPx    + 'px';
+  marqueeEl.style.width  = widthPx  + 'px';
+  marqueeEl.style.height = heightPx + 'px';
+}
+
+function endDrawRegion() {
+  if (!drawAnchor || !drawLatest) { cancelDrawRegion(); return; }
+  const r = canvas.getBoundingClientRect();
+  const W = r.width  || 1;
+  const H = r.height || 1;
+  const x0 = Math.min(drawAnchor.x, drawLatest.x) / W;
+  const y0 = Math.min(drawAnchor.y, drawLatest.y) / H;
+  const w  = Math.abs(drawLatest.x - drawAnchor.x) / W;
+  const h  = Math.abs(drawLatest.y - drawAnchor.y) / H;
+  const shape = drawShape;
+  cancelDrawRegion();
+  if (w < CONFIG.minRegionFraction || h < CONFIG.minRegionFraction) {
+    setStatus('Region too small — drag a larger area.');
+    return;
+  }
+  addRegionLayer(shape, { x: x0, y: y0, w, h });
+}
+
+// Appends a region layer to the stack, copying the current active layer's
+// kaleidoscope params so the region starts visually "matched" to its backdrop.
+// The new layer becomes active so sliders immediately tune it.
+function addRegionLayer(shape, bounds) {
+  const base = activeLayer();
+  const layer = {
+    kind: 'region',
+    shape,
+    bounds,
+    source: 'prior',   // phase 5 exposes source picker; default stays 'prior'
+    feather: 0,        // phase 5 adds feather slider
+    mode: base.mode,
+    p1: base.p1, p2: base.p2,
+    rot: base.rot, zoom: base.zoom,
+    cx: base.cx, cy: base.cy,  // same coord system as base while source='prior';
+                               // phase 5 reinterprets cx/cy for source='crop'
+  };
+  state.layers.push(layer);
+  state.activeLayerIndex = state.layers.length - 1;
+  syncDomFromState();
+  updateLabels();
+  render();
+  writeStateToHash();
+  dispatchChange();
+  setStatus(`Added ${shape} region — tune with the sliders, or click "+ Region" to add another.`);
+}
+
+btnAddRegion.addEventListener('click', enterPickingShape);
+btnShapeRect.addEventListener('click', () => armDraw('rect'));
+btnShapeEllipse.addEventListener('click', () => armDraw('ellipse'));
+btnCancelDraw.addEventListener('click', cancelDrawRegion);
 
 // ─── Slider inputs → scheduleRender ──────────────────────────────────────────
 for (const k of SLIDER_KEYS) SLIDERS[k].el.addEventListener('input', scheduleRender);
