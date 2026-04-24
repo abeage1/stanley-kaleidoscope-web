@@ -20,48 +20,85 @@ When a change tempts you toward any of the above, the right answer is almost alw
 
 ## State contract — honor this
 
-All user-facing state lives in one plain object in human units:
+The tool is a non-destructive layered compositor. State lives in one plain
+object in human units:
 
 ```js
-const state = { mode: 0, p1: 8, p2: 1.00, rot: 0, zoom: 1.00, cx: 50, cy: 50 };
+const state = {
+  activeLayerIndex: 0,
+  layers: [
+    { kind: 'base',   mode: 0, p1: 8, p2: 1.00, rot: 0, zoom: 1.00, cx: 50, cy: 50 },
+    { kind: 'region', shape: 'rect'|'ellipse',
+      bounds: { x, y, w, h },            // 0..1 canvas UV, top-left origin, frozen
+      source: 'original'|'prior'|'crop',
+      feather: 0..1,                     // fraction of region's min half-extent
+      mode, p1, p2, rot, zoom, cx, cy },
+    // …more region layers stacked on top
+  ],
+};
 ```
 
-- `state.mode` is `0..4` (matches the `<select>` value).
-- Slider values in `state` are **human units**: degrees, ratios, percent. DOM sliders store integers; the `SLIDERS` config table maps DOM ↔ state via its `scale` field.
-- `render(state)` is a pure function of `state` (plus texture). It does **not** read DOM values directly.
-- All user-driven triggers (slider `input`, resize, canvas drag, mode change) go through `scheduleRender()`, which rAF-coalesces to at most one draw per frame.
-- Direct `render()` calls are reserved for the synchronous export path.
+- Invariant: `layers[0].kind === 'base'` always. The base layer cannot be deleted or moved.
+- `activeLayerIndex` names the layer that sliders, the mode picker, and drag gestures currently target.
+- `state.layers[*].mode` is `0..4` (matches the `<select>` value).
+- Slider values stored on layers are **human units**: degrees, ratios, percent. DOM sliders store integers; the `SLIDERS` config table maps DOM ↔ state via its `scale` field and operates on `activeLayer()`.
+- For `source='crop'`, `cx` / `cy` are percentages of the **region**, not the canvas.
+- `render()` is a pure function of `state` (plus texture). It does **not** read DOM values directly.
+- All user-driven triggers (slider `input`, resize, canvas drag, mode change, layer list actions, region-draw gesture) go through `scheduleRender()` or explicit mutation helpers — each rAF-coalesces to at most one draw per frame.
+- Direct `render()` calls are reserved for the synchronous export path and the explicit mutation helpers (`setActiveLayer`, `addRegion`, `removeLayer`, `reorderLayer`, `resetAll`) whose caller owns the frame cadence.
 
 Every new feature should extend this model, not work around it:
 
-- If the feature adds a tunable, add an entry to `SLIDERS` and a field to `state`.
-- If the feature changes rendering, it reads from `state`.
-- If the feature is visible in the product, it should be representable in the URL hash (so it round-trips via share-and-paste). `writeStateToHash` and `readStateFromHash` define the schema — extend them together.
+- If the feature adds a per-layer tunable, add a field to every relevant layer kind, plus SLIDERS or the region-controls pathway, plus hash serialization.
+- If the feature changes rendering, it reads from `state.layers` (never from DOM).
+- If the feature is visible in the product, it should round-trip via the URL hash. `writeStateToHash` / `readStateFromHash` define the schema — extend them together.
+
+## Rendering pipeline
+
+Rendering walks `state.layers` through **two ping-pong FBOs** and blits the
+final FBO to the default framebuffer. This keeps the export path's
+`preserveDrawingBuffer=false` invariant: `gl.readPixels` on the default
+framebuffer after the blit still produces the composite.
+
+- FBO targets are clamped to `min(canvas.*, MAX_TEXTURE_SIZE, CONFIG.maxFboSize)` (default 4096). Two RGBA8 FBOs at the cap = ~128 MB VRAM.
+- A base-only stack at a canvas size that exceeds the FBO cap bypasses the pipeline entirely (direct render to default framebuffer) so single-layer 4K+ exports keep native resolution.
+- Layer N reads layer N-1's composite from TEXTURE1 (`u_prev_tex`); the source image stays bound to TEXTURE0. The main fragment shader branches on `u_source` (original / prior / crop) to pick which sampler feeds the kaleidoscope math, and on `u_region_kind` to decide whether to mix the tiled result against the prior backdrop through a feathered SDF mask.
+- FBO allocation failure falls back to a single-layer base render with a user-visible status warning. Any region layers above it are silently dropped for that frame.
 
 ## Agent surface — keep stable
 
-`window.__kaleido` is a public API contract. Consumers may include browser automation, MCP tools, iframe embeds, and future Claude sessions. Changes to its shape are breaking changes:
+`window.__kaleido` is a public API contract. Consumers include browser automation, MCP tools, iframe embeds, and future Claude sessions. Changes to its shape are breaking changes.
 
-- `state` getter, `setState(patch)`, `loadImageFromUrl`, `reset`, `exportPNG`, `MODES`, `ready`.
+Current contract (apiVersion 2):
 
-`data-kaleido="…"` attributes are also part of the contract — renaming or removing one breaks external selectors.
+- `apiVersion: 2`
+- `state` getter → deep copy of `{ activeLayerIndex, layers }`
+- `setState(patch)` → merges `activeLayerIndex?` and `layers?` (full array replacement; `layers[0].kind` must be `'base'`). v1 flat patches like `{ mode: 2 }` are rejected with a `console.error` pointing here.
+- `addRegion({ shape, bounds, source?, feather? })` → pushes a new region layer, makes it active, returns its index (or `-1` on validation failure).
+- `removeLayer(index)` (index ≥ 1)
+- `setActiveLayer(index)`
+- `reorderLayer(from, to)` (from, to ≥ 1)
+- `loadImageFromUrl(url, name)`, `reset()`, `exportPNG() → Blob`, `MODES`, `ready: true`
 
-The `postMessage` bridge only activates when `window.parent !== window`.
+`data-kaleido="…"` attributes are also part of the contract — renaming or removing one breaks external selectors. Layer rows in the sidebar carry `data-kaleido="layer-{idx}"`.
 
-The `kaleido:change` CustomEvent fires on every render with `{ detail: { ...state } }`.
+The `postMessage` bridge only activates when `window.parent !== window`. Its message types mirror the methods above (`getState`, `setState`, `addRegion`, `removeLayer`, `setActiveLayer`, `reorderLayer`, `loadImage`, `exportPNG`).
+
+The `kaleido:change` CustomEvent fires on every render and every structural mutation with `{ detail: cloneState() }` (the full v2 shape).
 
 ## GPU safety
 
 Any WebGL path that takes an image size or a viewport size must clamp:
 
 - Upload: `maybeDownscale` against `MAX_TEXTURE_SIZE`; reject inputs over `CONFIG.maxInputPixels`.
+- FBO allocation: `ensureFBOs` clamps to `min(canvas.*, MAX_TEXTURE_SIZE, CONFIG.maxFboSize)` and handles allocation failure explicitly.
 - Export: clamp target `w × h` to `MAX_VP_SIZE` and surface the clamp in the status bar.
 
-Do not add a new code path that calls `gl.texImage2D` or changes `canvas.width/height` without going through these checks.
+Do not add a new code path that calls `gl.texImage2D` or changes `canvas.width/height` without going through these checks. Do not allocate a framebuffer without going through `createFBO` / `ensureFBOs`.
 
 ## Export path quirk
 
-Export does **not** use `preserveDrawingBuffer: true`. It calls `gl.readPixels` into a `Uint8ClampedArray`, flips Y in place, and draws that into an offscreen 2D canvas before `toBlob`. If you touch `exportPNG`, preserve this shape — the alternative (turning `preserveDrawingBuffer` back on) pays a per-frame FPS tax on Apple GPUs.
+Export does **not** use `preserveDrawingBuffer: true`. It calls `gl.readPixels` on the default framebuffer (which holds the blit output from the pipeline) into a `Uint8ClampedArray`, flips Y in place, and draws that into an offscreen 2D canvas before `toBlob`. If you touch `exportPNG`, preserve this shape — the alternative (turning `preserveDrawingBuffer` back on) pays a per-frame FPS tax on Apple GPUs.
 
 ## CSP
 

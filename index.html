@@ -377,25 +377,71 @@ main.drag-over::after {
 <footer id="status">Ready — open an image to start</footer>
 
 <!--
-  AGENT API — window.__kaleido
+  AGENT API — window.__kaleido  (apiVersion: 2)
 
-  Read state:    window.__kaleido.state          → { mode, p1, p2, rot, zoom, cx, cy }
-  Set state:     window.__kaleido.setState({...patch})
-  Load image:    window.__kaleido.loadImageFromUrl(url, name)
-  Export PNG:    await window.__kaleido.exportPNG() → Blob
-  Reset:         window.__kaleido.reset()
-  Observe:       document.addEventListener('kaleido:change', e => e.detail)
+  The tool is a layered non-destructive compositor. layers[0] is a full-canvas
+  "base" kaleidoscope; layers[1..N] are axis-aligned rect or ellipse region
+  layers that composite over the prior output. Region bounds are stored in
+  canvas UV coordinates (0..1, y-down) and frozen once created — to reshape,
+  delete and re-add. Params (mode, sliders, source, feather) stay editable
+  forever.
 
-  URL hash state: #m=0&p1=8&p2=1&rot=45&zoom=1.5&cx=50&cy=50[&img=<url>]
+  State shape:
+    {
+      activeLayerIndex: <int>,
+      layers: [
+        { kind: 'base',   mode, p1, p2, rot, zoom, cx, cy },
+        { kind: 'region', shape: 'rect'|'ellipse',
+          bounds: { x, y, w, h },        // 0..1 canvas UV, top-left origin
+          source: 'original'|'prior'|'crop',
+          feather: 0..1,                 // fraction of region min half-extent
+          mode, p1, p2, rot, zoom, cx, cy },
+        …
+      ]
+    }
 
-  Canvas input: drag → sets cx/cy; shift+drag → rotates (a full
-  canvas-width horizontal sweep = 360°). Touch drag always sets cx/cy.
+  API:
+    window.__kaleido.apiVersion       → 2
+    window.__kaleido.state            → deep-cloned {activeLayerIndex, layers}
+    window.__kaleido.setState(patch)  → merges {activeLayerIndex?, layers?};
+                                        layers[0].kind must be 'base'
+    window.__kaleido.addRegion({ shape, bounds, source?, feather? }) → new index
+    window.__kaleido.removeLayer(i)       (i >= 1)
+    window.__kaleido.setActiveLayer(i)
+    window.__kaleido.reorderLayer(from, to)   (from,to >= 1)
+    window.__kaleido.loadImageFromUrl(url, name)
+    window.__kaleido.reset()           → fresh single-base-layer stack
+    await window.__kaleido.exportPNG() → Blob
+    window.__kaleido.MODES             → mode metadata table
+    window.__kaleido.ready             → true
+    document.addEventListener('kaleido:change', e => e.detail)
+                                       → payload is the full v2 state
 
-  When embedded as an iframe, postMessage is also accepted:
-    {type:'setState', payload:{...}, replyId?}
-    {type:'loadImage', payload:{url, name}, replyId?}
-    {type:'exportPNG', replyId}
-    {type:'getState', replyId}
+  Selectors: every row in the Layers panel has data-kaleido="layer-{idx}".
+  Existing data-kaleido attributes on buttons, sliders, and value labels
+  are preserved. Passing v1 flat patches (e.g. { mode: 2 }) to setState
+  logs a migration error and is rejected.
+
+  URL hash state (v2):
+    #a=<activeIdx>&L=<layer0>|<layer1>|…[&img=<url>]
+    each <layer> is '_'-joined fields; base → 'b_m=…_p1=…_…',
+    region → 'r_sh=rect_x=…_y=…_w=…_h=…_src=prior_f=0_m=…_p1=…_…'.
+  Legacy v1 hashes (#m=…&p1=…) migrate to a single-base-layer v2 stack.
+
+  Canvas input: drag → sets cx/cy on the active layer;
+  shift+drag → rotates (canvas-width sweep = 360°);
+  "+ Region" button → shape picker → click-drag on canvas to stamp a
+  new region layer (marquee-only preview, kaleidoscope appears on release).
+
+  When embedded as an iframe, postMessage is accepted:
+    {type:'getState',        replyId}
+    {type:'setState',        payload, replyId?}
+    {type:'addRegion',       payload:{shape, bounds, source?, feather?}, replyId?}
+    {type:'removeLayer',     payload:{index}, replyId?}
+    {type:'setActiveLayer',  payload:{index}, replyId?}
+    {type:'reorderLayer',    payload:{from, to}, replyId?}
+    {type:'loadImage',       payload:{url, name}, replyId?}
+    {type:'exportPNG',       replyId?}
 -->
 
 <script>
@@ -785,16 +831,17 @@ function cloneLayer(L) {
   return out;
 }
 
-// v1-compatible {mode, p1, p2, rot, zoom, cx, cy} view of the active layer.
-// Used by the external agent surface and the kaleido:change event payload;
-// phase 6 replaces this with the full {activeLayerIndex, layers} v2 shape.
-function flatViewOfActiveLayer() {
-  const L = activeLayer();
-  return { mode: L.mode, p1: L.p1, p2: L.p2, rot: L.rot, zoom: L.zoom, cx: L.cx, cy: L.cy };
+// Deep copy of the entire layered state for the external agent surface and
+// the kaleido:change event payload. Callers may mutate the result freely.
+function cloneState() {
+  return {
+    activeLayerIndex: state.activeLayerIndex,
+    layers: state.layers.map(cloneLayer),
+  };
 }
 
 function dispatchChange() {
-  document.dispatchEvent(new CustomEvent('kaleido:change', { detail: flatViewOfActiveLayer() }));
+  document.dispatchEvent(new CustomEvent('kaleido:change', { detail: cloneState() }));
 }
 
 function syncStateFromDom() {
@@ -1690,33 +1737,85 @@ const SAMPLES = [
   }
 })();
 
-// ─── Agent surface ───────────────────────────────────────────────────────────
-// v1-compatible shape: state getter and setState operate on the active layer
-// as a flat {mode, p1, p2, rot, zoom, cx, cy}. Phase 6 swaps this for the v2
-// {activeLayerIndex, layers} shape and adds addRegion / removeLayer / … .
+// ─── Agent surface (v2) ──────────────────────────────────────────────────────
+// Breaking change from v1. The state shape is now layered; slider fields are
+// no longer top-level. Callers mutate layers either by replacing layers[] via
+// setState, or by using addRegion / removeLayer / setActiveLayer / reorderLayer.
+// The full contract is documented in the AGENT API HTML comment above and in
+// CLAUDE.md's Agent surface section.
+function refreshAfterMutation() {
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  render();
+  writeStateToHash();
+  dispatchChange();
+}
+
+function v2SetState(patch) {
+  if (!patch || typeof patch !== 'object') return false;
+  // Reject v1-shaped patches loudly so migrations aren't silent.
+  if (!('layers' in patch) && !('activeLayerIndex' in patch) &&
+      ('mode' in patch || SLIDER_KEYS.some(k => k in patch))) {
+    console.error('window.__kaleido.setState: v1 flat patches are no longer accepted. ' +
+      'Use { layers: [...] } or one of addRegion / setActiveLayer / reorderLayer. ' +
+      'See CLAUDE.md "Agent surface" for the v2 contract.');
+    return false;
+  }
+  if (Array.isArray(patch.layers)) {
+    const next = patch.layers.map(l => cloneLayer(l));
+    if (next.length === 0 || next[0].kind !== 'base') {
+      console.warn('setState: layers[0] must be kind: "base"; patch ignored.');
+      return false;
+    }
+    for (const L of next) fillLayerDefaults(L);
+    state.layers = next;
+    if (state.activeLayerIndex >= state.layers.length) {
+      state.activeLayerIndex = state.layers.length - 1;
+    }
+  }
+  if ('activeLayerIndex' in patch) {
+    const a = parseInt(patch.activeLayerIndex, 10);
+    if (Number.isFinite(a) && a >= 0 && a < state.layers.length) {
+      state.activeLayerIndex = a;
+    }
+  }
+  refreshAfterMutation();
+  return true;
+}
+
+function v2AddRegion(opts) {
+  if (!opts || typeof opts !== 'object' || !opts.bounds) return -1;
+  const shape = (opts.shape === 'ellipse') ? 'ellipse' : 'rect';
+  const b = {
+    x: +opts.bounds.x, y: +opts.bounds.y,
+    w: +opts.bounds.w, h: +opts.bounds.h,
+  };
+  if (![b.x, b.y, b.w, b.h].every(Number.isFinite)) return -1;
+  if (b.w <= 0 || b.h <= 0) return -1;
+  const base = activeLayer();
+  const layer = {
+    kind: 'region', shape, bounds: b,
+    source: opts.source || 'prior',
+    feather: Number.isFinite(+opts.feather) ? Math.max(0, Math.min(1, +opts.feather)) : 0,
+    mode: base.mode, p1: base.p1, p2: base.p2,
+    rot: base.rot, zoom: base.zoom, cx: base.cx, cy: base.cy,
+  };
+  fillLayerDefaults(layer);
+  state.layers.push(layer);
+  state.activeLayerIndex = state.layers.length - 1;
+  refreshAfterMutation();
+  return state.activeLayerIndex;
+}
+
 window.__kaleido = {
-  get state() { return flatViewOfActiveLayer(); },
-  setState(patch) {
-    if (!patch || typeof patch !== 'object') return;
-    const L = activeLayer();
-    let modeChanged = false;
-    if ('mode' in patch) {
-      const m = parseInt(patch.mode, 10);
-      if (m >= 0 && m <= 4 && m !== L.mode) { L.mode = m; modeChanged = true; }
-    }
-    for (const k of SLIDER_KEYS) {
-      if (k in patch) {
-        const v = +patch[k];
-        if (Number.isFinite(v)) L[k] = v;
-      }
-    }
-    if (modeChanged && !('p1' in patch)) L.p1 = MODES[L.mode].def;
-    syncDomFromState();
-    updateLabels();
-    render();
-    writeStateToHash();
-    dispatchChange();
-  },
+  apiVersion: 2,
+  get state() { return cloneState(); },
+  setState: v2SetState,
+  addRegion: v2AddRegion,
+  removeLayer,
+  setActiveLayer,
+  reorderLayer,
   loadImageFromUrl,
   reset: resetAll,
   exportPNG,
@@ -1736,9 +1835,17 @@ if (window.parent !== window) {
     };
     try {
       switch (d.type) {
-        case 'getState':  reply({ ok: true, state: flatViewOfActiveLayer() }); break;
-        case 'setState':  window.__kaleido.setState(d.payload); reply({ ok: true }); break;
-        case 'loadImage': window.__kaleido.loadImageFromUrl(d.payload?.url, d.payload?.name || 'image'); reply({ ok: true }); break;
+        case 'getState':        reply({ ok: true, state: cloneState() }); break;
+        case 'setState':        reply({ ok: v2SetState(d.payload) }); break;
+        case 'addRegion': {
+          const idx = v2AddRegion(d.payload);
+          reply({ ok: idx >= 0, index: idx });
+          break;
+        }
+        case 'removeLayer':     removeLayer(d.payload?.index);    reply({ ok: true }); break;
+        case 'setActiveLayer':  setActiveLayer(d.payload?.index); reply({ ok: true }); break;
+        case 'reorderLayer':    reorderLayer(d.payload?.from, d.payload?.to); reply({ ok: true }); break;
+        case 'loadImage':       loadImageFromUrl(d.payload?.url, d.payload?.name || 'image'); reply({ ok: true }); break;
         case 'exportPNG': {
           const blob = await exportPNG();
           reply({ ok: true, size: blob?.size ?? 0 });
