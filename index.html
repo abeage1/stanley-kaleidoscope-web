@@ -168,6 +168,7 @@ input[type=range]::-moz-range-thumb {
   display: block;
   cursor: crosshair;
 }
+main.rotate-ready #c { cursor: ew-resize; }
 
 .empty {
   position: absolute;
@@ -272,7 +273,7 @@ main.drag-over::after {
         <input type="range" id="cy" data-kaleido="slider-cy" min="0" max="1000" value="500">
       </div>
 
-      <div class="hint">Click or drag the preview to set center</div>
+      <div class="hint">Drag to set center · Shift+drag to rotate</div>
     </div>
   </aside>
 
@@ -300,6 +301,9 @@ main.drag-over::after {
   Observe:       document.addEventListener('kaleido:change', e => e.detail)
 
   URL hash state: #m=0&p1=8&p2=1&rot=45&zoom=1.5&cx=50&cy=50[&img=<url>]
+
+  Canvas input: drag → sets cx/cy; shift+drag → rotates (a full
+  canvas-width horizontal sweep = 360°). Touch drag always sets cx/cy.
 
   When embedded as an iframe, postMessage is also accepted:
     {type:'setState', payload:{...}, replyId?}
@@ -668,8 +672,12 @@ stage.addEventListener('drop', e => {
   if (f) loadImageFile(f);
 });
 
-// ─── Click / drag canvas → set center ────────────────────────────────────────
-let dragging = false;
+// ─── Canvas gestures: drag → center, shift+drag → rotate ─────────────────────
+// Mode locks at mousedown and is held until release — releasing shift mid-drag
+// does not switch the gesture, which matches how design tools handle modifier-
+// gated modes and keeps the anchor math predictable.
+let dragMode = null;    // 'center' | 'rotate' | null
+let rotAnchor = null;   // { startX, startRot } while rotating
 
 function setCenterFromClient(clientX, clientY) {
   const r = canvas.getBoundingClientRect();
@@ -680,13 +688,58 @@ function setCenterFromClient(clientX, clientY) {
   scheduleRender();
 }
 
-canvas.addEventListener('mousedown',  e => { dragging = true;  setCenterFromClient(e.clientX, e.clientY); });
-window.addEventListener('mousemove',  e => { if (dragging) setCenterFromClient(e.clientX, e.clientY); });
-window.addEventListener('mouseup',    () => { dragging = false; });
+function setRotationDeg(deg) {
+  // Wrap into [0, 360) so the gesture never hits a dead stop at the slider ends.
+  const wrapped = ((deg % 360) + 360) % 360;
+  SLIDERS.rot.el.value = Math.round(wrapped * SLIDERS.rot.scale);
+  scheduleRender();
+}
 
-canvas.addEventListener('touchstart', e => { e.preventDefault(); dragging = true;  setCenterFromClient(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
-canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (dragging) setCenterFromClient(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
-canvas.addEventListener('touchend',   () => { dragging = false; });
+function beginDrag(clientX, clientY, shiftKey) {
+  if (shiftKey) {
+    dragMode = 'rotate';
+    rotAnchor = {
+      startX: clientX,
+      startRot: +SLIDERS.rot.el.value / SLIDERS.rot.scale,
+    };
+  } else {
+    dragMode = 'center';
+    setCenterFromClient(clientX, clientY);
+  }
+}
+
+function continueDrag(clientX, clientY) {
+  if (dragMode === 'center') {
+    setCenterFromClient(clientX, clientY);
+  } else if (dragMode === 'rotate') {
+    const width = canvas.clientWidth || 1;
+    const dx = clientX - rotAnchor.startX;
+    setRotationDeg(rotAnchor.startRot + (dx / width) * 360);
+  }
+}
+
+function endDrag() {
+  dragMode = null;
+  rotAnchor = null;
+}
+
+canvas.addEventListener('mousedown', e => beginDrag(e.clientX, e.clientY, e.shiftKey));
+window.addEventListener('mousemove', e => { if (dragMode) continueDrag(e.clientX, e.clientY); });
+window.addEventListener('mouseup',   endDrag);
+// Defensive: drop the gesture if the window loses focus mid-drag so a stale
+// anchor can't carry over.
+window.addEventListener('blur',      endDrag);
+
+// Touch has no shift modifier, so touch drag always sets center.
+canvas.addEventListener('touchstart', e => { e.preventDefault(); beginDrag(e.touches[0].clientX, e.touches[0].clientY, false); }, { passive: false });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (dragMode) continueDrag(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+canvas.addEventListener('touchend',   endDrag);
+canvas.addEventListener('touchcancel', endDrag);
+
+// Shift-held cursor affordance on the stage.
+window.addEventListener('keydown', e => { if (e.key === 'Shift') stage.classList.add('rotate-ready'); });
+window.addEventListener('keyup',   e => { if (e.key === 'Shift') stage.classList.remove('rotate-ready'); });
+window.addEventListener('blur',    () => stage.classList.remove('rotate-ready'));
 
 // ─── Slider inputs → scheduleRender ──────────────────────────────────────────
 for (const k of SLIDER_KEYS) SLIDERS[k].el.addEventListener('input', scheduleRender);
