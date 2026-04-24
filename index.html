@@ -191,6 +191,62 @@ main.drag-over::after {
   pointer-events: none;
 }
 
+/* Region drawing */
+.shape-picker { display: flex; gap: 4px; }
+.shape-picker button { flex: 1; padding: 6px 4px; }
+#stage.drawing-region,
+#stage.drawing-region #c { cursor: crosshair; }
+.marquee {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: rgba(70,130,180,.10);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.marquee.ellipse { border-radius: 50%; }
+
+/* Source picker (region-only) */
+.source-picker { display: flex; gap: 6px; flex-wrap: wrap; }
+.source-picker label {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 11px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.source-picker input[type=radio] { accent-color: var(--accent); }
+
+/* Layers list */
+.layers-list { display: flex; flex-direction: column; gap: 2px; }
+.layers-list:empty { display: none; }
+.layer-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: var(--bg-mid);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+.layer-row:hover { background: #4a4a4d; }
+.layer-row.active { border-color: var(--accent); background: #3d5063; }
+.layer-icon { font-size: 14px; flex-shrink: 0; }
+.layer-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.layer-row button {
+  width: 22px; height: 20px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.layer-row button:disabled { opacity: .25; cursor: default; }
+
 .hidden { display: none !important; }
 </style>
 </head>
@@ -211,6 +267,17 @@ main.drag-over::after {
     <div class="ctrl-group">
       <div class="lbl-row"><span>Try a sample</span></div>
       <div class="samples-grid" id="samplesGrid"></div>
+    </div>
+
+    <div class="ctrl-group">
+      <div class="lbl-row"><span>Layers</span></div>
+      <div class="layers-list" data-kaleido="layers"></div>
+      <button id="btnAddRegion" data-kaleido="btnAddRegion" disabled>+ Region</button>
+      <div class="shape-picker hidden" id="shapePicker">
+        <button id="btnShapeRect"    data-kaleido="btnShapeRect">Rect</button>
+        <button id="btnShapeEllipse" data-kaleido="btnShapeEllipse">Ellipse</button>
+        <button id="btnCancelDraw"   data-kaleido="btnCancelDraw">Cancel</button>
+      </div>
     </div>
 
     <div class="ctrl-group">
@@ -275,6 +342,25 @@ main.drag-over::after {
 
       <div class="hint">Drag to set center · Shift+drag to rotate</div>
     </div>
+
+    <div class="ctrl-group hidden" id="regionCtrls" data-kaleido="region-controls">
+      <div>
+        <div class="lbl-row"><span>Source</span></div>
+        <div class="source-picker">
+          <label><input type="radio" name="layer-source" value="original" data-kaleido="src-original"> Original</label>
+          <label><input type="radio" name="layer-source" value="prior"    data-kaleido="src-prior"> Prior</label>
+          <label><input type="radio" name="layer-source" value="crop"     data-kaleido="src-crop"> Crop</label>
+        </div>
+      </div>
+
+      <div>
+        <div class="lbl-row">
+          <span>Feather</span>
+          <span data-kaleido="val-feather">0%</span>
+        </div>
+        <input type="range" id="feather" data-kaleido="slider-feather" min="0" max="100" value="0">
+      </div>
+    </div>
   </aside>
 
   <main id="stage" data-kaleido="stage">
@@ -291,25 +377,71 @@ main.drag-over::after {
 <footer id="status">Ready — open an image to start</footer>
 
 <!--
-  AGENT API — window.__kaleido
+  AGENT API — window.__kaleido  (apiVersion: 2)
 
-  Read state:    window.__kaleido.state          → { mode, p1, p2, rot, zoom, cx, cy }
-  Set state:     window.__kaleido.setState({...patch})
-  Load image:    window.__kaleido.loadImageFromUrl(url, name)
-  Export PNG:    await window.__kaleido.exportPNG() → Blob
-  Reset:         window.__kaleido.reset()
-  Observe:       document.addEventListener('kaleido:change', e => e.detail)
+  The tool is a layered non-destructive compositor. layers[0] is a full-canvas
+  "base" kaleidoscope; layers[1..N] are axis-aligned rect or ellipse region
+  layers that composite over the prior output. Region bounds are stored in
+  canvas UV coordinates (0..1, y-down) and frozen once created — to reshape,
+  delete and re-add. Params (mode, sliders, source, feather) stay editable
+  forever.
 
-  URL hash state: #m=0&p1=8&p2=1&rot=45&zoom=1.5&cx=50&cy=50[&img=<url>]
+  State shape:
+    {
+      activeLayerIndex: <int>,
+      layers: [
+        { kind: 'base',   mode, p1, p2, rot, zoom, cx, cy },
+        { kind: 'region', shape: 'rect'|'ellipse',
+          bounds: { x, y, w, h },        // 0..1 canvas UV, top-left origin
+          source: 'original'|'prior'|'crop',
+          feather: 0..1,                 // fraction of region min half-extent
+          mode, p1, p2, rot, zoom, cx, cy },
+        …
+      ]
+    }
 
-  Canvas input: drag → sets cx/cy; shift+drag → rotates (a full
-  canvas-width horizontal sweep = 360°). Touch drag always sets cx/cy.
+  API:
+    window.__kaleido.apiVersion       → 2
+    window.__kaleido.state            → deep-cloned {activeLayerIndex, layers}
+    window.__kaleido.setState(patch)  → merges {activeLayerIndex?, layers?};
+                                        layers[0].kind must be 'base'
+    window.__kaleido.addRegion({ shape, bounds, source?, feather? }) → new index
+    window.__kaleido.removeLayer(i)       (i >= 1)
+    window.__kaleido.setActiveLayer(i)
+    window.__kaleido.reorderLayer(from, to)   (from,to >= 1)
+    window.__kaleido.loadImageFromUrl(url, name)
+    window.__kaleido.reset()           → fresh single-base-layer stack
+    await window.__kaleido.exportPNG() → Blob
+    window.__kaleido.MODES             → mode metadata table
+    window.__kaleido.ready             → true
+    document.addEventListener('kaleido:change', e => e.detail)
+                                       → payload is the full v2 state
 
-  When embedded as an iframe, postMessage is also accepted:
-    {type:'setState', payload:{...}, replyId?}
-    {type:'loadImage', payload:{url, name}, replyId?}
-    {type:'exportPNG', replyId}
-    {type:'getState', replyId}
+  Selectors: every row in the Layers panel has data-kaleido="layer-{idx}".
+  Existing data-kaleido attributes on buttons, sliders, and value labels
+  are preserved. Passing v1 flat patches (e.g. { mode: 2 }) to setState
+  logs a migration error and is rejected.
+
+  URL hash state (v2):
+    #a=<activeIdx>&L=<layer0>|<layer1>|…[&img=<url>]
+    each <layer> is '_'-joined fields; base → 'b_m=…_p1=…_…',
+    region → 'r_sh=rect_x=…_y=…_w=…_h=…_src=prior_f=0_m=…_p1=…_…'.
+  Legacy v1 hashes (#m=…&p1=…) migrate to a single-base-layer v2 stack.
+
+  Canvas input: drag → sets cx/cy on the active layer;
+  shift+drag → rotates (canvas-width sweep = 360°);
+  "+ Region" button → shape picker → click-drag on canvas to stamp a
+  new region layer (marquee-only preview, kaleidoscope appears on release).
+
+  When embedded as an iframe, postMessage is accepted:
+    {type:'getState',        replyId}
+    {type:'setState',        payload, replyId?}
+    {type:'addRegion',       payload:{shape, bounds, source?, feather?}, replyId?}
+    {type:'removeLayer',     payload:{index}, replyId?}
+    {type:'setActiveLayer',  payload:{index}, replyId?}
+    {type:'reorderLayer',    payload:{from, to}, replyId?}
+    {type:'loadImage',       payload:{url, name}, replyId?}
+    {type:'exportPNG',       replyId?}
 -->
 
 <script>
@@ -321,12 +453,32 @@ const CONFIG = {
   unsplashFullPx: 1600,
   synthSourcePx: 800,
   maxInputPixels: 64_000_000,  // ~8k × 8k — soft cap before GPU limits
+  maxFboSize: 4096,            // per-axis cap for ping-pong render targets (VRAM budget)
+  minRegionFraction: 0.02,     // minimum rect/ellipse extent as a fraction of canvas
 };
 
 // ─── GLSL ────────────────────────────────────────────────────────────────────
 const VERT = `
 attribute vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+// Trivial pass-through blit: samples the final ping-pong FBO into the default
+// framebuffer. Derives uv from clip-space a_pos so no extra uniforms are needed.
+const BLIT_VERT = `
+attribute vec2 a_pos;
+varying   vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+
+const BLIT_FRAG = `
+precision mediump float;
+uniform sampler2D u_tex;
+varying   vec2 v_uv;
+void main() { gl_FragColor = texture2D(u_tex, v_uv); }
 `;
 
 const FRAG = `
@@ -337,6 +489,7 @@ precision mediump float;
 #endif
 
 uniform sampler2D u_tex;
+uniform sampler2D u_prev_tex;    // previous composite (unused when region_kind=0)
 uniform vec2  u_tsz;
 uniform vec2  u_csz;
 uniform int   u_mode;
@@ -346,6 +499,10 @@ uniform float u_rot;
 uniform float u_zoom;
 uniform float u_cx;
 uniform float u_cy;
+uniform int   u_region_kind;     // 0 base, 1 rect, 2 ellipse
+uniform vec4  u_region;          // x, y, w, h in canvas UV (0..1, y-down)
+uniform int   u_source;          // 0 original, 1 prior, 2 crop
+uniform float u_feather;         // 0..1 fraction of region's min half-extent
 
 const float PI     = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
@@ -356,27 +513,12 @@ float fold(float v, float period) {
   return v < period * 0.5 ? v : period - v;
 }
 
-void main() {
-  vec2 ctr = vec2(u_cx / 100.0 * u_tsz.x,
-                  u_cy / 100.0 * u_tsz.y);
-
-  // Uniform scale so neither axis is stretched.
-  float uniScale = min(u_tsz.x / u_csz.x, u_tsz.y / u_csz.y);
-
-  // Canvas pixel → image-space offset from centre.
-  // gl_FragCoord.y=0 is canvas bottom; image y=0 is top → negate y.
-  vec2 d = vec2(
-     gl_FragCoord.x - u_csz.x * 0.5,
-    -(gl_FragCoord.y - u_csz.y * 0.5)) * uniScale / u_zoom;
-
-  float rad = radians(u_rot);
-  float c   = cos(rad), s = sin(rad);
-  d = vec2(d.x*c - d.y*s, d.x*s + d.y*c);
-
-  float mdim = min(u_tsz.x, u_tsz.y);
-  float ts   = u_p1 / 100.0 * mdim;   // tile size (unused for radial)
-  vec2 off;
-
+// Mode-specific tile unfolding. d is the offset from centre in source-texture
+// pixels; srcSz is the texture's pixel dimensions.
+vec2 kaleidoscopeOffset(vec2 d, vec2 srcSz) {
+  float mdim = min(srcSz.x, srcSz.y);
+  float ts   = u_p1 / 100.0 * mdim;
+  vec2  off;
   if (u_mode == 0) {
     // Radial — u_p1=1 is passthrough (shows original so user can see the sampled region)
     if (u_p1 < 2.0) {
@@ -391,21 +533,15 @@ void main() {
       if (tn > h) tn = seg - tn;
       off = r * vec2(cos(tn), sin(tn));
     }
-
   } else if (u_mode == 1) {
-    // Rectangle
     float th = ts * u_asp;
     off = vec2(fold(d.x, ts), fold(d.y, th));
-
   } else if (u_mode == 2) {
-    // Triangle 45-45-90
     float tx = fold(d.x, ts);
     float ty = fold(d.y, ts);
     if (tx < ty) { float t = tx; tx = ty; ty = t; }
     off = vec2(tx, ty);
-
   } else if (u_mode == 3) {
-    // Triangle 60-60-60 (equilateral)
     float vl = d.y * 2.0 / (ts * SQRT3);
     float ul = d.x / ts - vl * 0.5;
     float uf = fract(ul);
@@ -415,11 +551,8 @@ void main() {
       vf = 1.0 - uf;
       uf = tu;
     }
-    off = vec2(uf * ts + vf * ts * 0.5,
-               vf * ts * SQRT3 * 0.5);
-
+    off = vec2(uf * ts + vf * ts * 0.5, vf * ts * SQRT3 * 0.5);
   } else {
-    // Triangle 30-60-90
     float th = ts * SQRT3;
     float tx = fold(d.x, ts);
     float ty = fold(d.y, th);
@@ -430,10 +563,96 @@ void main() {
     if (dt > 0.0) { tx -= 2.0*A*dt/AB2; ty -= 2.0*B*dt/AB2; }
     off = vec2(tx, ty);
   }
+  return off;
+}
 
-  // CLAMP_TO_EDGE on the texture handles out-of-range UVs; no extra clamp needed.
-  vec2 uv = (ctr + off) / u_tsz;
-  gl_FragColor = texture2D(u_tex, uv);
+// Sample this layer's kaleidoscope output for the current fragment. The three
+// source modes share the same kaleidoscope math but address different texture
+// and coordinate spaces: original samples u_tex in image pixels; prior samples
+// the previous composite in canvas pixels; crop treats the region itself as
+// the virtual canvas+source, with cx/cy interpreted region-locally.
+vec4 sampleSource() {
+  float rad = radians(u_rot);
+  float co  = cos(rad), si = sin(rad);
+
+  if (u_source == 0) {
+    // Original image (y-axis flip because image is y-down, fragCoord is y-up)
+    vec2 ctr = vec2(u_cx / 100.0 * u_tsz.x, u_cy / 100.0 * u_tsz.y);
+    float uniScale = min(u_tsz.x / u_csz.x, u_tsz.y / u_csz.y);
+    vec2 d = vec2( gl_FragCoord.x - u_csz.x * 0.5,
+                  -(gl_FragCoord.y - u_csz.y * 0.5)) * uniScale / u_zoom;
+    d = vec2(d.x * co - d.y * si, d.x * si + d.y * co);
+    vec2 off = kaleidoscopeOffset(d, u_tsz);
+    return texture2D(u_tex, (ctr + off) / u_tsz);
+  }
+
+  if (u_source == 1) {
+    // Prior composite — canvas-space sampling, no image-scale adjustment.
+    // Both source and destination live on the canvas grid.
+    vec2 ctr = vec2(u_cx / 100.0 * u_csz.x, u_cy / 100.0 * u_csz.y);
+    vec2 d = vec2( gl_FragCoord.x - u_csz.x * 0.5,
+                  -(gl_FragCoord.y - u_csz.y * 0.5)) / u_zoom;
+    d = vec2(d.x * co - d.y * si, d.x * si + d.y * co);
+    vec2 off = kaleidoscopeOffset(d, u_csz);
+    vec2 uv = (ctr + off) / u_csz;                // y-up UV into prev FBO
+    return texture2D(u_prev_tex, uv);
+  }
+
+  // u_source == 2: crop. The region acts as both the virtual canvas (the frame
+  // the kaleidoscope tiles into) and the virtual source (a patch of the prior
+  // composite). cx/cy are region-local percentages.
+  vec2 regionPx = u_region.zw * u_csz;
+  vec2 regionCtr = vec2(
+    (u_region.x + u_region.z * 0.5) * u_csz.x,
+    (1.0 - u_region.y - u_region.w * 0.5) * u_csz.y  // region.y is y-down; centre in y-up
+  );
+  vec2 d = vec2( gl_FragCoord.x - regionCtr.x,
+                -(gl_FragCoord.y - regionCtr.y)) / u_zoom;
+  d = vec2(d.x * co - d.y * si, d.x * si + d.y * co);
+  vec2 off = kaleidoscopeOffset(d, regionPx);
+  vec2 ctrRegion = vec2(u_cx / 100.0 * regionPx.x, u_cy / 100.0 * regionPx.y);
+  vec2 uvRegion  = (ctrRegion + off) / regionPx;   // 0..1 inside region, y-down
+  // Fold into [0,1] via symmetric reflect so the tile wraps without leaking
+  // beyond the region bounds.
+  vec2 reflected = vec2(
+    1.0 - abs(1.0 - mod(uvRegion.x, 2.0)),
+    1.0 - abs(1.0 - mod(uvRegion.y, 2.0))
+  );
+  vec2 uvCanvas = u_region.xy + reflected * u_region.zw;       // y-down canvas UV
+  vec2 sampleUV = vec2(uvCanvas.x, 1.0 - uvCanvas.y);          // flip to y-up FBO
+  return texture2D(u_prev_tex, sampleUV);
+}
+
+void main() {
+  vec4 tiled = sampleSource();
+
+  if (u_region_kind == 0) {
+    gl_FragColor = tiled;
+    return;
+  }
+
+  // Region mask: 1 inside, 0 outside, smoothstep falloff of width u_feather
+  // (fraction of min half-extent for rect, fraction of radius for ellipse).
+  vec2 frag_uv = gl_FragCoord.xy / u_csz;
+  vec2 chk = vec2(frag_uv.x, 1.0 - frag_uv.y);   // region bounds are y-down
+  vec2 centre  = u_region.xy + u_region.zw * 0.5;
+  vec2 halfExt = u_region.zw * 0.5;
+  float m;
+  if (u_region_kind == 1) {
+    // Rect signed distance: max(|p - c| - halfExt); negative inside.
+    vec2 e = abs(chk - centre) - halfExt;
+    float sdf = max(e.x, e.y);
+    float f = max(u_feather * min(halfExt.x, halfExt.y), 1e-5);
+    m = smoothstep(f * 0.5, -f * 0.5, sdf);
+  } else {
+    // Ellipse: r = length((p - c)/halfExt); inside is r < 1.
+    vec2 rel = (chk - centre) / halfExt;
+    float r = length(rel);
+    float halfF = max(u_feather * 0.5, 1e-5);
+    m = smoothstep(1.0 + halfF, 1.0 - halfF, r);
+  }
+  vec4 backdrop = texture2D(u_prev_tex, frag_uv);
+  gl_FragColor = mix(backdrop, tiled, m);
 }
 `;
 
@@ -454,26 +673,43 @@ function mkShader(type, src) {
   return sh;
 }
 
-const prog = gl.createProgram();
-gl.attachShader(prog, mkShader(gl.VERTEX_SHADER,   VERT));
-gl.attachShader(prog, mkShader(gl.FRAGMENT_SHADER, FRAG));
-gl.linkProgram(prog);
-if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
-  throw new Error(gl.getProgramInfoLog(prog));
-gl.useProgram(prog);
+// Build a program and force a_pos to attribute location 0 before linking, so a
+// single enableVertexAttribArray / vertexAttribPointer setup serves every program.
+function mkProgram(vsrc, fsrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, mkShader(gl.VERTEX_SHADER,   vsrc));
+  gl.attachShader(p, mkShader(gl.FRAGMENT_SHADER, fsrc));
+  gl.bindAttribLocation(p, 0, 'a_pos');
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+const mainProg = mkProgram(VERT, FRAG);
+const blitProg = mkProgram(BLIT_VERT, BLIT_FRAG);
+
+const mainU = Object.fromEntries(
+  ['u_tex','u_prev_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom',
+   'u_cx','u_cy','u_region_kind','u_region','u_source','u_feather']
+  .map(n => [n, gl.getUniformLocation(mainProg, n)])
+);
+const blitU = { u_tex: gl.getUniformLocation(blitProg, 'u_tex') };
+
+// Samplers are set once per program. Main reads the source image from
+// TEXTURE0 and the prior composite (for region layers) from TEXTURE1; the
+// blit program reads the final FBO from TEXTURE0.
+gl.useProgram(mainProg);
+gl.uniform1i(mainU.u_tex, 0);
+gl.uniform1i(mainU.u_prev_tex, 1);
+gl.useProgram(blitProg); gl.uniform1i(blitU.u_tex, 0);
 
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
 gl.bufferData(gl.ARRAY_BUFFER,
   new Float32Array([-1,-1, 1,-1, -1,1,  1,-1, 1,1, -1,1]),
   gl.STATIC_DRAW);
-const aPos = gl.getAttribLocation(prog, 'a_pos');
-gl.enableVertexAttribArray(aPos);
-gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-const U = Object.fromEntries(
-  ['u_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom','u_cx','u_cy']
-  .map(n => [n, gl.getUniformLocation(prog, n)])
-);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
 const tex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -481,11 +717,60 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-gl.uniform1i(U.u_tex, 0);
 
 const MAX_TEX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
 const MAX_VP  = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
 const MAX_VP_SIZE = Math.min(MAX_VP[0], MAX_VP[1]);
+
+// ─── Ping-pong FBOs ──────────────────────────────────────────────────────────
+// Two framebuffer-backed textures used to composite the layer stack. Each
+// non-base pass reads the previous composite and writes the next. The final
+// FBO is blitted to the default framebuffer; this keeps the export path's
+// preserveDrawingBuffer=false invariant unchanged.
+let fboA = null, fboB = null, fboW = 0, fboH = 0;
+
+function createFBO(w, h) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (!complete) { gl.deleteTexture(t); gl.deleteFramebuffer(f); return null; }
+  return { fbo: f, tex: t, w, h };
+}
+
+function deleteFBO(x) {
+  if (!x) return;
+  gl.deleteTexture(x.tex);
+  gl.deleteFramebuffer(x.fbo);
+}
+
+// Allocate / resize FBOs to cover the requested render size, clamped so we
+// never blow past the GPU's texture limit or our VRAM budget. Returns false if
+// allocation fails — render() then falls back to the single-pass direct path.
+function ensureFBOs(wantW, wantH) {
+  const cap = Math.min(MAX_TEX, CONFIG.maxFboSize);
+  const tw = Math.max(1, Math.min(wantW, cap));
+  const th = Math.max(1, Math.min(wantH, cap));
+  if (fboA && fboB && fboW === tw && fboH === th) return true;
+  deleteFBO(fboA); deleteFBO(fboB);
+  fboA = createFBO(tw, th);
+  fboB = createFBO(tw, th);
+  if (!fboA || !fboB) {
+    deleteFBO(fboA); deleteFBO(fboB);
+    fboA = fboB = null; fboW = fboH = 0;
+    return false;
+  }
+  fboW = tw; fboH = th;
+  return true;
+}
 
 let imgW = 0, imgH = 0, hasImage = false;
 
@@ -494,6 +779,11 @@ const $ = (id) => document.getElementById(id);
 const btnOpen = $('btnOpen'), btnSave = $('btnSave'), btnReset = $('btnReset');
 const fileIn = $('fileIn'), modeEl = $('mode'), stage = $('stage'), empty = $('empty');
 const statusEl = $('status'), rowP2 = $('rowP2'), lblP1 = $('lblP1');
+const btnAddRegion = $('btnAddRegion'), shapePicker = $('shapePicker');
+const btnShapeRect = $('btnShapeRect'), btnShapeEllipse = $('btnShapeEllipse'), btnCancelDraw = $('btnCancelDraw');
+const regionCtrls = $('regionCtrls'), featherEl = $('feather');
+const featherValEl = document.querySelector('[data-kaleido="val-feather"]');
+const sourceRadios = document.querySelectorAll('input[name="layer-source"]');
 
 // ─── Mode + slider config ────────────────────────────────────────────────────
 const TILE = { label: 'Tile Size', min: 5, max: 200, def: 50, fmt: v => v + '%' };
@@ -523,18 +813,60 @@ for (const k of SLIDER_KEYS) {
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
-const state = { mode: 0, p1: 8, p2: 1.00, rot: 0, zoom: 1.00, cx: 50, cy: 50 };
+// Non-destructive layered compositor. layers[0] is the full-canvas base
+// kaleidoscope (equivalent to today's single output); layers[1..N] are region
+// layers added in later phases. activeLayerIndex names the layer that the
+// sliders, mode picker, and drag gestures currently target.
+function defaultBaseLayer() {
+  return { kind: 'base', mode: 0, p1: 8, p2: 1.00, rot: 0, zoom: 1.00, cx: 50, cy: 50 };
+}
+
+const state = { activeLayerIndex: 0, layers: [defaultBaseLayer()] };
+
+function activeLayer() { return state.layers[state.activeLayerIndex]; }
+
+function cloneLayer(L) {
+  const out = { ...L };
+  if (L.bounds) out.bounds = { ...L.bounds };
+  return out;
+}
+
+// Deep copy of the entire layered state for the external agent surface and
+// the kaleido:change event payload. Callers may mutate the result freely.
+function cloneState() {
+  return {
+    activeLayerIndex: state.activeLayerIndex,
+    layers: state.layers.map(cloneLayer),
+  };
+}
+
+function dispatchChange() {
+  document.dispatchEvent(new CustomEvent('kaleido:change', { detail: cloneState() }));
+}
 
 function syncStateFromDom() {
-  state.mode = parseInt(modeEl.value, 10) || 0;
-  for (const k of SLIDER_KEYS) state[k] = +SLIDERS[k].el.value / SLIDERS[k].scale;
+  const L = activeLayer();
+  L.mode = parseInt(modeEl.value, 10) || 0;
+  for (const k of SLIDER_KEYS) L[k] = +SLIDERS[k].el.value / SLIDERS[k].scale;
+  if (L.kind === 'region') {
+    const checked = document.querySelector('input[name="layer-source"]:checked');
+    if (checked) L.source = checked.value;
+    L.feather = Math.max(0, Math.min(1, +featherEl.value / 100));
+  }
 }
 
 function syncDomFromState() {
-  modeEl.value = String(state.mode);
-  applyModeUI(state.mode);
+  const L = activeLayer();
+  modeEl.value = String(L.mode);
+  applyModeUI(L.mode);
   for (const k of SLIDER_KEYS) {
-    SLIDERS[k].el.value = Math.round(state[k] * SLIDERS[k].scale);
+    SLIDERS[k].el.value = Math.round(L[k] * SLIDERS[k].scale);
+  }
+  const isRegion = L.kind === 'region';
+  regionCtrls.classList.toggle('hidden', !isRegion);
+  if (isRegion) {
+    for (const r of sourceRadios) r.checked = (r.value === (L.source || 'prior'));
+    featherEl.value = Math.round((L.feather || 0) * 100);
   }
 }
 
@@ -547,24 +879,109 @@ function applyModeUI(mode) {
 }
 
 function updateLabels() {
+  const L = activeLayer();
   for (const k of SLIDER_KEYS) {
-    SLIDERS[k].valEl.textContent = SLIDERS[k].fmt(state[k], state.mode);
+    SLIDERS[k].valEl.textContent = SLIDERS[k].fmt(L[k], L.mode);
+  }
+  if (L.kind === 'region') {
+    featherValEl.textContent = Math.round((L.feather || 0) * 100) + '%';
   }
 }
 
 // ─── Render (pure function of state) ─────────────────────────────────────────
+function buildLayers() { return state.layers; }
+
+function setMainUniformsForLayer(layer, rtW, rtH) {
+  gl.uniform2f(mainU.u_tsz,  imgW, imgH);
+  gl.uniform2f(mainU.u_csz,  rtW, rtH);
+  gl.uniform1i(mainU.u_mode, layer.mode);
+  gl.uniform1f(mainU.u_p1,   layer.p1);
+  gl.uniform1f(mainU.u_asp,  layer.p2);
+  gl.uniform1f(mainU.u_rot,  layer.rot);
+  gl.uniform1f(mainU.u_zoom, layer.zoom);
+  gl.uniform1f(mainU.u_cx,   layer.cx);
+  gl.uniform1f(mainU.u_cy,   layer.cy);
+  if (layer.kind === 'region' && layer.bounds) {
+    const kind = layer.shape === 'ellipse' ? 2 : 1;
+    const b = layer.bounds;
+    gl.uniform1i(mainU.u_region_kind, kind);
+    gl.uniform4f(mainU.u_region, b.x, b.y, b.w, b.h);
+    gl.uniform1i(mainU.u_source, layer.source === 'original' ? 0 : layer.source === 'crop' ? 2 : 1);
+    gl.uniform1f(mainU.u_feather, layer.feather || 0);
+  } else {
+    gl.uniform1i(mainU.u_region_kind, 0);
+    gl.uniform4f(mainU.u_region, 0, 0, 0, 0);
+    gl.uniform1i(mainU.u_source, 0);
+    gl.uniform1f(mainU.u_feather, 0);
+  }
+}
+
+// Fallback when FBO allocation fails: single-pass render straight to the
+// default framebuffer. Produces the same output as the pre-pipeline code for
+// a base-only stack and silently drops any region layers above it (the caller
+// surfaces a user-visible status line).
+function renderBaseDirect(layer) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(mainProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  setMainUniformsForLayer(layer, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
 function render() {
   if (!hasImage) return;
+  const layers = buildLayers();
+
+  // Base-only output at a canvas larger than the FBO cap skips the pipeline so
+  // the main shader can render directly at full resolution — preserves export
+  // fidelity for 4K+ images. Once region layers exist, the FBO path is
+  // mandatory and any necessary downscale is surfaced in the status bar.
+  const fboCap = Math.min(MAX_TEX, CONFIG.maxFboSize);
+  const exceedsCap = canvas.width > fboCap || canvas.height > fboCap;
+  const baseOnly = layers.length === 1 && layers[0].kind === 'base';
+  if (baseOnly && exceedsCap) {
+    renderBaseDirect(layers[0]);
+    return;
+  }
+
+  if (!ensureFBOs(canvas.width, canvas.height)) {
+    renderBaseDirect(layers[0]);
+    const dropped = layers.length - 1;
+    setStatus(dropped > 0
+      ? `FBO allocation failed — base layer only (${dropped} region${dropped > 1 ? 's' : ''} dropped).`
+      : 'FBO allocation failed — reduced render path.');
+    return;
+  }
+
+  // Walk the stack: each pass writes to `dst`; after the pass, `src` holds the
+  // freshly-rendered composite and dst flips to the other FBO for the next.
+  // Non-base layers also sample the prior composite from TEXTURE1 as backdrop.
+  let dst = fboA, src = null;
+  for (let i = 0; i < layers.length; i++) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, fboW, fboH);
+    gl.useProgram(mainProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (i > 0) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    }
+    setMainUniformsForLayer(layers[i], fboW, fboH);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    src = dst;
+    dst = (dst === fboA) ? fboB : fboA;
+  }
+
+  // Blit the last-written FBO to the visible canvas. At preview sizes FBO ==
+  // canvas so this is a 1:1 LINEAR sample at pixel centres (bit-identical).
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.uniform2f(U.u_tsz,  imgW, imgH);
-  gl.uniform2f(U.u_csz,  canvas.width, canvas.height);
-  gl.uniform1i(U.u_mode, state.mode);
-  gl.uniform1f(U.u_p1,   state.p1);
-  gl.uniform1f(U.u_asp,  state.p2);
-  gl.uniform1f(U.u_rot,  state.rot);
-  gl.uniform1f(U.u_zoom, state.zoom);
-  gl.uniform1f(U.u_cx,   state.cx);
-  gl.uniform1f(U.u_cy,   state.cy);
+  gl.useProgram(blitProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, src.tex);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
@@ -580,7 +997,7 @@ function scheduleRender() {
     updateLabels();
     render();
     writeStateToHash();
-    document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+    dispatchChange();
   });
 }
 
@@ -630,6 +1047,7 @@ function uploadToGL(source, name) {
   canvas.classList.remove('hidden');
   empty.classList.add('hidden');
   btnSave.disabled = false;
+  btnAddRegion.disabled = false;
   resizeCanvas();
   setStatus(`${name}  (${imgW} × ${imgH})`);
 }
@@ -723,43 +1141,318 @@ function endDrag() {
   rotAnchor = null;
 }
 
-canvas.addEventListener('mousedown', e => beginDrag(e.clientX, e.clientY, e.shiftKey));
-window.addEventListener('mousemove', e => { if (dragMode) continueDrag(e.clientX, e.clientY); });
-window.addEventListener('mouseup',   endDrag);
-// Defensive: drop the gesture if the window loses focus mid-drag so a stale
-// anchor can't carry over.
-window.addEventListener('blur',      endDrag);
+canvas.addEventListener('mousedown', e => {
+  if (drawMode === 'armed') { beginDrawRegion(e.clientX, e.clientY); return; }
+  beginDrag(e.clientX, e.clientY, e.shiftKey);
+});
+window.addEventListener('mousemove', e => {
+  if (drawMode === 'drawing') { continueDrawRegion(e.clientX, e.clientY); return; }
+  if (dragMode) continueDrag(e.clientX, e.clientY);
+});
+window.addEventListener('mouseup', () => {
+  if (drawMode === 'drawing') { endDrawRegion(); return; }
+  endDrag();
+});
+// Defensive: drop any in-flight gesture if the window loses focus.
+window.addEventListener('blur', () => { endDrag(); if (drawMode === 'drawing') cancelDrawRegion(); });
 
-// Touch has no shift modifier, so touch drag always sets center.
-canvas.addEventListener('touchstart', e => { e.preventDefault(); beginDrag(e.touches[0].clientX, e.touches[0].clientY, false); }, { passive: false });
-canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (dragMode) continueDrag(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
-canvas.addEventListener('touchend',   endDrag);
-canvas.addEventListener('touchcancel', endDrag);
+// Touch has no shift modifier, so touch drag always sets center (or draws a
+// region when drawMode is armed).
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  if (drawMode === 'armed') { beginDrawRegion(t.clientX, t.clientY); return; }
+  beginDrag(t.clientX, t.clientY, false);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  if (drawMode === 'drawing') { continueDrawRegion(t.clientX, t.clientY); return; }
+  if (dragMode) continueDrag(t.clientX, t.clientY);
+}, { passive: false });
+canvas.addEventListener('touchend', () => {
+  if (drawMode === 'drawing') { endDrawRegion(); return; }
+  endDrag();
+});
+canvas.addEventListener('touchcancel', () => {
+  if (drawMode === 'drawing') cancelDrawRegion();
+  else endDrag();
+});
 
-// Shift-held cursor affordance on the stage.
-window.addEventListener('keydown', e => { if (e.key === 'Shift') stage.classList.add('rotate-ready'); });
+// Shift-held cursor affordance on the stage. Suppressed while drawing a region
+// so the crosshair cursor and shift-rotate affordance don't fight each other.
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && drawMode) { cancelDrawRegion(); return; }
+  if (e.key === 'Shift' && !drawMode) stage.classList.add('rotate-ready');
+});
 window.addEventListener('keyup',   e => { if (e.key === 'Shift') stage.classList.remove('rotate-ready'); });
 window.addEventListener('blur',    () => stage.classList.remove('rotate-ready'));
+
+// ─── Region drawing ──────────────────────────────────────────────────────────
+// State machine:
+//   null → 'picking-shape' (after "+ Region" click)
+//        → 'armed' (after shape chosen; cursor crosshair; next canvas pointerdown
+//                   starts drawing)
+//        → 'drawing' (pointerdown→pointerup; marquee tracks the pointer)
+//        → null (pointerup creates region layer; or Cancel/Escape returns to null)
+// Sliders and drag gestures are suppressed while drawMode is non-null.
+let drawMode = null;   // null | 'picking-shape' | 'armed' | 'drawing'
+let drawShape = null;  // 'rect' | 'ellipse'
+let drawAnchor = null; // { x, y } in canvas pixels (top-left origin)
+let drawLatest = null; // { x, y } current pointer in canvas pixels
+let marqueeEl = null;
+
+function setDrawMode(next) {
+  drawMode = next;
+  if (next === 'armed' || next === 'drawing') {
+    stage.classList.add('drawing-region');
+    stage.classList.remove('rotate-ready');
+  } else {
+    stage.classList.remove('drawing-region');
+  }
+}
+
+function showShapePicker(show) {
+  shapePicker.classList.toggle('hidden', !show);
+  btnAddRegion.classList.toggle('hidden', show);
+}
+
+function enterPickingShape() {
+  if (!hasImage) return;
+  showShapePicker(true);
+  setDrawMode('picking-shape');
+}
+
+function armDraw(shape) {
+  drawShape = shape;
+  setDrawMode('armed');
+  setStatus(`Draw ${shape === 'ellipse' ? 'an ellipse' : 'a rectangle'} on the canvas — press Escape to cancel.`);
+}
+
+function cancelDrawRegion() {
+  if (marqueeEl) { marqueeEl.remove(); marqueeEl = null; }
+  drawAnchor = drawLatest = null;
+  drawShape = null;
+  showShapePicker(false);
+  setDrawMode(null);
+  setStatus('');
+}
+
+function canvasPixelFromClient(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(r.width,  clientX - r.left)),
+    y: Math.max(0, Math.min(r.height, clientY - r.top)),
+  };
+}
+
+function beginDrawRegion(clientX, clientY) {
+  const p = canvasPixelFromClient(clientX, clientY);
+  drawAnchor = p;
+  drawLatest = p;
+  setDrawMode('drawing');
+  // Marquee lives inside #stage so it can be positioned relative to the canvas.
+  marqueeEl = document.createElement('div');
+  marqueeEl.className = 'marquee' + (drawShape === 'ellipse' ? ' ellipse' : '');
+  marqueeEl.dataset.kaleido = 'marquee';
+  stage.appendChild(marqueeEl);
+  updateMarquee();
+}
+
+function continueDrawRegion(clientX, clientY) {
+  if (!drawAnchor) return;
+  drawLatest = canvasPixelFromClient(clientX, clientY);
+  updateMarquee();
+}
+
+function updateMarquee() {
+  if (!marqueeEl || !drawAnchor || !drawLatest) return;
+  const r = canvas.getBoundingClientRect();
+  const stageR = stage.getBoundingClientRect();
+  // Convert canvas-pixel coords back to stage-relative for positioning.
+  const leftPx   = r.left - stageR.left + Math.min(drawAnchor.x, drawLatest.x);
+  const topPx    = r.top  - stageR.top  + Math.min(drawAnchor.y, drawLatest.y);
+  const widthPx  = Math.abs(drawLatest.x - drawAnchor.x);
+  const heightPx = Math.abs(drawLatest.y - drawAnchor.y);
+  marqueeEl.style.left   = leftPx   + 'px';
+  marqueeEl.style.top    = topPx    + 'px';
+  marqueeEl.style.width  = widthPx  + 'px';
+  marqueeEl.style.height = heightPx + 'px';
+}
+
+function endDrawRegion() {
+  if (!drawAnchor || !drawLatest) { cancelDrawRegion(); return; }
+  const r = canvas.getBoundingClientRect();
+  const W = r.width  || 1;
+  const H = r.height || 1;
+  const x0 = Math.min(drawAnchor.x, drawLatest.x) / W;
+  const y0 = Math.min(drawAnchor.y, drawLatest.y) / H;
+  const w  = Math.abs(drawLatest.x - drawAnchor.x) / W;
+  const h  = Math.abs(drawLatest.y - drawAnchor.y) / H;
+  const shape = drawShape;
+  cancelDrawRegion();
+  if (w < CONFIG.minRegionFraction || h < CONFIG.minRegionFraction) {
+    setStatus('Region too small — drag a larger area.');
+    return;
+  }
+  addRegionLayer(shape, { x: x0, y: y0, w, h });
+}
+
+// Appends a region layer to the stack, copying the current active layer's
+// kaleidoscope params so the region starts visually "matched" to its backdrop.
+// The new layer becomes active so sliders immediately tune it.
+function addRegionLayer(shape, bounds) {
+  const base = activeLayer();
+  const layer = {
+    kind: 'region',
+    shape,
+    bounds,
+    source: 'prior',   // phase 5 exposes source picker; default stays 'prior'
+    feather: 0,        // phase 5 adds feather slider
+    mode: base.mode,
+    p1: base.p1, p2: base.p2,
+    rot: base.rot, zoom: base.zoom,
+    cx: base.cx, cy: base.cy,  // same coord system as base while source='prior';
+                               // phase 5 reinterprets cx/cy for source='crop'
+  };
+  state.layers.push(layer);
+  state.activeLayerIndex = state.layers.length - 1;
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  render();
+  writeStateToHash();
+  dispatchChange();
+  setStatus(`Added ${shape} region — tune with the sliders, or click "+ Region" to add another.`);
+}
+
+btnAddRegion.addEventListener('click', enterPickingShape);
+btnShapeRect.addEventListener('click', () => armDraw('rect'));
+btnShapeEllipse.addEventListener('click', () => armDraw('ellipse'));
+btnCancelDraw.addEventListener('click', cancelDrawRegion);
+
+// ─── Layers list UI ──────────────────────────────────────────────────────────
+// Re-renders the sidebar layer list. Top-of-stack is shown first, matching
+// layer-panel convention in image editors. The base layer is pinned to the
+// bottom (index 0); region layers stack on top.
+const layersList = document.querySelector('[data-kaleido="layers"]');
+
+function layerLabel(L, layersArr, index) {
+  if (L.kind === 'base') return { icon: '⬛', text: 'Base' };
+  // Number by ordinal among layers of the same shape, counting from the bottom.
+  let n = 0;
+  for (let i = 1; i <= index; i++) {
+    const l = layersArr[i];
+    if (l.kind === 'region' && l.shape === L.shape) n++;
+  }
+  return L.shape === 'ellipse'
+    ? { icon: '⬭', text: 'Ellipse ' + n }
+    : { icon: '▭', text: 'Rect ' + n };
+}
+
+function renderLayersList() {
+  if (!layersList) return;
+  layersList.innerHTML = '';
+  const N = state.layers.length;
+  for (let i = N - 1; i >= 0; i--) {
+    const L = state.layers[i];
+    const isActive = i === state.activeLayerIndex;
+    const isBase = L.kind === 'base';
+    const { icon, text } = layerLabel(L, state.layers, i);
+    const row = document.createElement('div');
+    row.className = 'layer-row' + (isActive ? ' active' : '');
+    row.dataset.kaleido = 'layer-' + i;
+    row.innerHTML =
+      `<span class="layer-icon">${icon}</span>` +
+      `<span class="layer-label">${text}</span>` +
+      `<button class="layer-up"   title="Move up"   ${(isBase || i === N - 1) ? 'disabled' : ''}>↑</button>` +
+      `<button class="layer-down" title="Move down" ${(isBase || i <= 1)      ? 'disabled' : ''}>↓</button>` +
+      `<button class="layer-del"  title="Delete"    ${isBase ? 'disabled' : ''}>×</button>`;
+    row.addEventListener('click', () => setActiveLayer(i));
+    row.querySelector('.layer-up')  .addEventListener('click', (e) => { e.stopPropagation(); reorderLayer(i, i + 1); });
+    row.querySelector('.layer-down').addEventListener('click', (e) => { e.stopPropagation(); reorderLayer(i, i - 1); });
+    row.querySelector('.layer-del') .addEventListener('click', (e) => { e.stopPropagation(); removeLayer(i); });
+    layersList.appendChild(row);
+  }
+}
+
+function setActiveLayer(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= state.layers.length) return;
+  if (state.activeLayerIndex === index) return;
+  state.activeLayerIndex = index;
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  writeStateToHash();
+  dispatchChange();
+  // No render() — swapping which layer the sliders target doesn't change pixels.
+}
+
+// Move a layer from `from` to `to`, clamping so the base layer stays pinned at
+// index 0. Updates activeLayerIndex so the "current" layer follows.
+function reorderLayer(from, to) {
+  const N = state.layers.length;
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return;
+  if (from === to) return;
+  if (from <= 0 || to <= 0 || from >= N || to >= N) return;
+  const [moved] = state.layers.splice(from, 1);
+  state.layers.splice(to, 0, moved);
+  let a = state.activeLayerIndex;
+  if (a === from) a = to;
+  else if (from < a && to >= a) a--;
+  else if (from > a && to <= a) a++;
+  state.activeLayerIndex = a;
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  render();
+  writeStateToHash();
+  dispatchChange();
+}
+
+// Delete the region layer at `index`. Base layer (index 0) is not removable.
+function removeLayer(index) {
+  if (!Number.isInteger(index) || index <= 0 || index >= state.layers.length) return;
+  state.layers.splice(index, 1);
+  if (state.activeLayerIndex >= state.layers.length) {
+    state.activeLayerIndex = state.layers.length - 1;
+  } else if (state.activeLayerIndex > index) {
+    state.activeLayerIndex--;
+  }
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  render();
+  writeStateToHash();
+  dispatchChange();
+}
 
 // ─── Slider inputs → scheduleRender ──────────────────────────────────────────
 for (const k of SLIDER_KEYS) SLIDERS[k].el.addEventListener('input', scheduleRender);
 modeEl.addEventListener('change', () => {
-  state.mode = parseInt(modeEl.value, 10) || 0;
-  applyModeUI(state.mode);
-  const m = MODES[state.mode];
-  SLIDERS.p1.el.value = m.def;
+  const newMode = parseInt(modeEl.value, 10) || 0;
+  applyModeUI(newMode);
+  SLIDERS.p1.el.value = MODES[newMode].def;
   scheduleRender();
 });
 
+// Region-only controls share the same scheduleRender pathway — their values
+// are picked up by syncStateFromDom on the next frame.
+featherEl.addEventListener('input', scheduleRender);
+for (const r of sourceRadios) r.addEventListener('change', scheduleRender);
+
 // ─── Reset ───────────────────────────────────────────────────────────────────
+// Resets the full stack to a fresh single-base-layer state, matching the plan
+// ("resetAll creates a single-base-layer stack"). Destroys region layers.
 function resetAll() {
-  const modeDef = MODES[state.mode].def;
-  for (const k of SLIDER_KEYS) state[k] = (k === 'p1') ? modeDef : SLIDERS[k].def;
+  state.layers = [defaultBaseLayer()];
+  state.activeLayerIndex = 0;
   syncDomFromState();
   updateLabels();
+  renderLayersList();
   render();
   writeStateToHash();
-  document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
+  dispatchChange();
 }
 btnReset.addEventListener('click', resetAll);
 
@@ -777,9 +1470,18 @@ async function exportPNG() {
     w = Math.floor(w * k); h = Math.floor(h * k);
     clamped = true;
   }
-  setStatus(clamped
-    ? `Exporting at ${w}×${h} (clamped to GPU max ${MAX_VP_SIZE}px)…`
-    : `Exporting full-resolution PNG…`);
+  const N = state.layers.length;
+  const fboCap = Math.min(MAX_TEX, CONFIG.maxFboSize);
+  // The pipeline downscales only when region layers force the FBO path AND
+  // the export target exceeds the FBO cap. Base-only renders bypass FBOs
+  // (see render()) and keep native resolution.
+  const fboClamped = N > 1 && (w > fboCap || h > fboCap);
+  const parts = [`Exporting ${N > 1 ? N + ' layers ' : ''}at ${w}×${h}`];
+  const notes = [];
+  if (clamped)    notes.push(`GPU max ${MAX_VP_SIZE}px`);
+  if (fboClamped) notes.push(`FBO ${fboCap}px`);
+  if (notes.length) parts.push('(' + notes.join('; ') + ')');
+  setStatus(parts.join(' ') + '…');
 
   // Render at export size
   canvas.width = w; canvas.height = h;
@@ -818,44 +1520,154 @@ btnSave.addEventListener('click', async () => {
   a.download = 'kaleidoscope.png';
   a.click();
   URL.revokeObjectURL(a.href);
-  setStatus('PNG saved.');
+  const N = state.layers.length;
+  setStatus(`PNG saved${N > 1 ? ` (${N} layers)` : ''}.`);
 });
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 function setStatus(msg) { statusEl.textContent = msg; }
 
 // ─── URL hash state ──────────────────────────────────────────────────────────
+// Schema v2: `#a=<activeIdx>&L=<layer0>|<layer1>|...[&img=<url>]`
+// Fields inside a layer are `_`-joined; layers are `|`-joined. Underscore is
+// unambiguous with the decimal points in numeric values. Legacy v1 hashes
+// (`#m=…&p1=…`) migrate to a single-base-layer v2 stack on read.
+const FIELD_SEP = '_';
+const LAYER_SEP = '|';
 let hashWriteSuppressed = false;
+
+function fmtNum(v, decimals) {
+  if (!Number.isFinite(v)) return '0';
+  const s = (+v).toFixed(decimals);
+  return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
+}
+
+function serializeLayer(L) {
+  const parts = [];
+  if (L.kind === 'region') {
+    parts.push('r', `sh=${L.shape || 'rect'}`);
+    const b = L.bounds || { x: 0, y: 0, w: 1, h: 1 };
+    parts.push(`x=${fmtNum(b.x, 4)}`, `y=${fmtNum(b.y, 4)}`, `w=${fmtNum(b.w, 4)}`, `h=${fmtNum(b.h, 4)}`);
+    parts.push(`src=${L.source || 'prior'}`, `f=${fmtNum(L.feather || 0, 3)}`);
+  } else {
+    parts.push('b');
+  }
+  parts.push(
+    `m=${L.mode | 0}`,
+    `p1=${fmtNum(L.p1, 2)}`,
+    `p2=${fmtNum(L.p2, 2)}`,
+    `rot=${fmtNum(L.rot, 1)}`,
+    `zoom=${fmtNum(L.zoom, 2)}`,
+    `cx=${fmtNum(L.cx, 1)}`,
+    `cy=${fmtNum(L.cy, 1)}`,
+  );
+  return parts.join(FIELD_SEP);
+}
+
+function parseLayer(str) {
+  const fields = str.split(FIELD_SEP);
+  if (!fields.length) return null;
+  const tag = fields.shift();
+  const layer = tag === 'r' ? { kind: 'region' } : { kind: 'base' };
+  for (const f of fields) {
+    const eq = f.indexOf('=');
+    if (eq < 0) continue;
+    const k = f.slice(0, eq), v = f.slice(eq + 1);
+    if (k === 'sh') {
+      if (v === 'rect' || v === 'ellipse') layer.shape = v;
+    } else if (k === 'src') {
+      if (v === 'original' || v === 'prior' || v === 'crop') layer.source = v;
+    } else if (k === 'x' || k === 'y' || k === 'w' || k === 'h') {
+      if (!layer.bounds) layer.bounds = {};
+      const n = parseFloat(v);
+      if (Number.isFinite(n)) layer.bounds[k] = n;
+    } else if (k === 'f') {
+      const n = parseFloat(v);
+      if (Number.isFinite(n)) layer.feather = n;
+    } else if (k === 'm') {
+      const n = parseInt(v, 10);
+      if (n >= 0 && n <= 4) layer.mode = n;
+    } else if (k === 'p1' || k === 'p2' || k === 'rot' || k === 'zoom' || k === 'cx' || k === 'cy') {
+      const n = parseFloat(v);
+      if (Number.isFinite(n)) layer[k] = n;
+    }
+  }
+  return layer;
+}
+
+function fillLayerDefaults(L) {
+  if (!Number.isFinite(L.mode)) L.mode = 0;
+  if (!Number.isFinite(L.p1))   L.p1 = MODES[L.mode].def;
+  if (!Number.isFinite(L.p2))   L.p2 = 1.00;
+  if (!Number.isFinite(L.rot))  L.rot = 0;
+  if (!Number.isFinite(L.zoom)) L.zoom = 1.00;
+  if (!Number.isFinite(L.cx))   L.cx = 50;
+  if (!Number.isFinite(L.cy))   L.cy = 50;
+  if (L.kind === 'region') {
+    if (L.shape !== 'rect' && L.shape !== 'ellipse') L.shape = 'rect';
+    if (L.source !== 'original' && L.source !== 'prior' && L.source !== 'crop') L.source = 'prior';
+    if (!Number.isFinite(L.feather)) L.feather = 0;
+    if (!L.bounds) L.bounds = { x: 0, y: 0, w: 1, h: 1 };
+    for (const k of ['x','y','w','h']) {
+      if (!Number.isFinite(L.bounds[k])) L.bounds[k] = (k === 'w' || k === 'h') ? 1 : 0;
+    }
+  }
+}
 
 function writeStateToHash() {
   if (hashWriteSuppressed) return;
-  const params = new URLSearchParams();
-  params.set('m',    String(state.mode));
-  params.set('p1',   String(state.p1));
-  params.set('p2',   state.p2.toFixed(2));
-  params.set('rot',  state.rot.toFixed(1));
-  params.set('zoom', state.zoom.toFixed(2));
-  params.set('cx',   state.cx.toFixed(1));
-  params.set('cy',   state.cy.toFixed(1));
-  history.replaceState(null, '', '#' + params.toString());
+  const layers = state.layers.map(serializeLayer).join(LAYER_SEP);
+  history.replaceState(null, '', `#a=${state.activeLayerIndex}&L=${layers}`);
+}
+
+// Splits a raw hash body into a flat key→value map. Used for the top-level
+// fields (a, L, img); layer contents are parsed separately by parseLayer.
+function splitHashKV(raw) {
+  const out = new Map();
+  if (!raw) return out;
+  for (const kv of raw.split('&')) {
+    const eq = kv.indexOf('=');
+    if (eq < 0) out.set(kv, '');
+    else out.set(kv.slice(0, eq), decodeURIComponent(kv.slice(eq + 1)));
+  }
+  return out;
 }
 
 function readStateFromHash() {
-  if (!location.hash) return { patch: null, img: null };
-  const params = new URLSearchParams(location.hash.slice(1));
-  const patch = {};
-  if (params.has('m')) {
-    const m = parseInt(params.get('m'), 10);
-    if (m >= 0 && m <= 4) patch.mode = m;
-  }
-  const numKeys = ['p1', 'p2', 'rot', 'zoom', 'cx', 'cy'];
-  for (const k of numKeys) {
-    if (params.has(k)) {
-      const v = parseFloat(params.get(k));
-      if (Number.isFinite(v)) patch[k] = v;
+  if (!location.hash) return { state: null, img: null };
+  const raw = location.hash.slice(1);
+  const hasLayered = /(?:^|&)L=/.test(raw);
+
+  if (!hasLayered) {
+    // Legacy v1 flat hash — migrate to a single base layer.
+    const params = new URLSearchParams(raw);
+    const L = { kind: 'base' };
+    if (params.has('m')) {
+      const m = parseInt(params.get('m'), 10);
+      if (m >= 0 && m <= 4) L.mode = m;
     }
+    for (const k of ['p1','p2','rot','zoom','cx','cy']) {
+      if (params.has(k)) {
+        const v = parseFloat(params.get(k));
+        if (Number.isFinite(v)) L[k] = v;
+      }
+    }
+    fillLayerDefaults(L);
+    return { state: { activeLayerIndex: 0, layers: [L] }, img: params.get('img') };
   }
-  return { patch, img: params.get('img') };
+
+  const params = splitHashKV(raw);
+  const layers = (params.get('L') || '').split(LAYER_SEP).map(parseLayer).filter(Boolean);
+  // Invariant: layers[0] must be a base layer. Insert a default if missing.
+  if (!layers.length || layers[0].kind !== 'base') {
+    layers.unshift({ kind: 'base' });
+  }
+  for (const L of layers) fillLayerDefaults(L);
+
+  let a = parseInt(params.get('a'), 10);
+  if (!Number.isFinite(a) || a < 0 || a >= layers.length) a = 0;
+
+  return { state: { activeLayerIndex: a, layers }, img: params.get('img') || null };
 }
 
 // ─── Samples ─────────────────────────────────────────────────────────────────
@@ -933,29 +1745,85 @@ const SAMPLES = [
   }
 })();
 
-// ─── Agent surface ───────────────────────────────────────────────────────────
+// ─── Agent surface (v2) ──────────────────────────────────────────────────────
+// Breaking change from v1. The state shape is now layered; slider fields are
+// no longer top-level. Callers mutate layers either by replacing layers[] via
+// setState, or by using addRegion / removeLayer / setActiveLayer / reorderLayer.
+// The full contract is documented in the AGENT API HTML comment above and in
+// CLAUDE.md's Agent surface section.
+function refreshAfterMutation() {
+  syncDomFromState();
+  updateLabels();
+  renderLayersList();
+  render();
+  writeStateToHash();
+  dispatchChange();
+}
+
+function v2SetState(patch) {
+  if (!patch || typeof patch !== 'object') return false;
+  // Reject v1-shaped patches loudly so migrations aren't silent.
+  if (!('layers' in patch) && !('activeLayerIndex' in patch) &&
+      ('mode' in patch || SLIDER_KEYS.some(k => k in patch))) {
+    console.error('window.__kaleido.setState: v1 flat patches are no longer accepted. ' +
+      'Use { layers: [...] } or one of addRegion / setActiveLayer / reorderLayer. ' +
+      'See CLAUDE.md "Agent surface" for the v2 contract.');
+    return false;
+  }
+  if (Array.isArray(patch.layers)) {
+    const next = patch.layers.map(l => cloneLayer(l));
+    if (next.length === 0 || next[0].kind !== 'base') {
+      console.warn('setState: layers[0] must be kind: "base"; patch ignored.');
+      return false;
+    }
+    for (const L of next) fillLayerDefaults(L);
+    state.layers = next;
+    if (state.activeLayerIndex >= state.layers.length) {
+      state.activeLayerIndex = state.layers.length - 1;
+    }
+  }
+  if ('activeLayerIndex' in patch) {
+    const a = parseInt(patch.activeLayerIndex, 10);
+    if (Number.isFinite(a) && a >= 0 && a < state.layers.length) {
+      state.activeLayerIndex = a;
+    }
+  }
+  refreshAfterMutation();
+  return true;
+}
+
+function v2AddRegion(opts) {
+  if (!opts || typeof opts !== 'object' || !opts.bounds) return -1;
+  const shape = (opts.shape === 'ellipse') ? 'ellipse' : 'rect';
+  const b = {
+    x: +opts.bounds.x, y: +opts.bounds.y,
+    w: +opts.bounds.w, h: +opts.bounds.h,
+  };
+  if (![b.x, b.y, b.w, b.h].every(Number.isFinite)) return -1;
+  if (b.w <= 0 || b.h <= 0) return -1;
+  const base = activeLayer();
+  const layer = {
+    kind: 'region', shape, bounds: b,
+    source: opts.source || 'prior',
+    feather: Number.isFinite(+opts.feather) ? Math.max(0, Math.min(1, +opts.feather)) : 0,
+    mode: base.mode, p1: base.p1, p2: base.p2,
+    rot: base.rot, zoom: base.zoom, cx: base.cx, cy: base.cy,
+  };
+  fillLayerDefaults(layer);
+  state.layers.push(layer);
+  state.activeLayerIndex = state.layers.length - 1;
+  refreshAfterMutation();
+  return state.activeLayerIndex;
+}
+
 window.__kaleido = {
-  get state() { return { ...state }; },
-  setState(patch) {
-    if (!patch || typeof patch !== 'object') return;
-    let modeChanged = false;
-    if ('mode' in patch) {
-      const m = parseInt(patch.mode, 10);
-      if (m >= 0 && m <= 4 && m !== state.mode) { state.mode = m; modeChanged = true; }
-    }
-    for (const k of SLIDER_KEYS) {
-      if (k in patch) {
-        const v = +patch[k];
-        if (Number.isFinite(v)) state[k] = v;
-      }
-    }
-    if (modeChanged && !('p1' in patch)) state.p1 = MODES[state.mode].def;
-    syncDomFromState();
-    updateLabels();
-    render();
-    writeStateToHash();
-    document.dispatchEvent(new CustomEvent('kaleido:change', { detail: { ...state } }));
-  },
+  apiVersion: 2,
+  get state() { return cloneState(); },
+  setState: v2SetState,
+  addRegion: v2AddRegion,
+  removeLayer,
+  setActiveLayer,
+  reorderLayer,
   loadImageFromUrl,
   reset: resetAll,
   exportPNG,
@@ -975,9 +1843,17 @@ if (window.parent !== window) {
     };
     try {
       switch (d.type) {
-        case 'getState':  reply({ ok: true, state: { ...state } }); break;
-        case 'setState':  window.__kaleido.setState(d.payload); reply({ ok: true }); break;
-        case 'loadImage': window.__kaleido.loadImageFromUrl(d.payload?.url, d.payload?.name || 'image'); reply({ ok: true }); break;
+        case 'getState':        reply({ ok: true, state: cloneState() }); break;
+        case 'setState':        reply({ ok: v2SetState(d.payload) }); break;
+        case 'addRegion': {
+          const idx = v2AddRegion(d.payload);
+          reply({ ok: idx >= 0, index: idx });
+          break;
+        }
+        case 'removeLayer':     removeLayer(d.payload?.index);    reply({ ok: true }); break;
+        case 'setActiveLayer':  setActiveLayer(d.payload?.index); reply({ ok: true }); break;
+        case 'reorderLayer':    reorderLayer(d.payload?.from, d.payload?.to); reply({ ok: true }); break;
+        case 'loadImage':       loadImageFromUrl(d.payload?.url, d.payload?.name || 'image'); reply({ ok: true }); break;
         case 'exportPNG': {
           const blob = await exportPNG();
           reply({ ok: true, size: blob?.size ?? 0 });
@@ -993,23 +1869,107 @@ if (window.parent !== window) {
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 (function init() {
-  // Apply mode UI first so slider ranges match.
-  applyModeUI(state.mode);
-
-  // Load state from URL hash if present (suppress hash re-write during load).
-  const { patch, img } = readStateFromHash();
-  if (patch && Object.keys(patch).length) {
+  // Load layered stack from URL hash if present (suppress re-write during load).
+  const { state: loaded, img } = readStateFromHash();
+  if (loaded) {
     hashWriteSuppressed = true;
-    // If the hash sets mode but not p1, use the new mode's p1 default.
-    if ('mode' in patch && !('p1' in patch)) patch.p1 = MODES[patch.mode].def;
-    Object.assign(state, patch);
+    state.activeLayerIndex = loaded.activeLayerIndex;
+    state.layers = loaded.layers;
     syncDomFromState();
     hashWriteSuppressed = false;
+  } else {
+    // Fresh boot — just mirror the default base layer into the UI.
+    syncDomFromState();
   }
   updateLabels();
+  renderLayersList();
 
   // If a URL-shared image was requested, load it.
   if (img) loadImageFromUrl(img, 'shared-image');
+})();
+
+// ─── ?debug=1 test harness ───────────────────────────────────────────────────
+// Lightweight sanity tests that run in the page only when ?debug=1 is set.
+// Kept in-file per CLAUDE.md's "no test framework" rule. Covers hash round-
+// trip, legacy migration, and a mutation round-trip via the agent API.
+// Results print to console and overlay in the corner of the stage.
+if (new URLSearchParams(location.search).has('debug')) (function debug() {
+  const results = [];
+  const assert = (cond, msg) => {
+    results.push({ ok: !!cond, msg });
+    console[cond ? 'log' : 'error']('[test]', cond ? 'PASS' : 'FAIL', msg);
+  };
+  const jeq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // Hash round-trip — state serialises and parses back identically.
+  const roundTripCases = [
+    { activeLayerIndex: 0, layers: [{ kind:'base', mode:0, p1:8, p2:1, rot:0, zoom:1, cx:50, cy:50 }] },
+    { activeLayerIndex: 1, layers: [
+      { kind:'base',   mode:2, p1:75, p2:1.5, rot:45.3, zoom:1.25, cx:30.4, cy:70.9 },
+      { kind:'region', shape:'rect', bounds:{x:0.25,y:0.3,w:0.4,h:0.35},
+        source:'prior', feather:0.15,
+        mode:0, p1:6, p2:1, rot:12, zoom:1, cx:50, cy:50 }]},
+    { activeLayerIndex: 2, layers: [
+      { kind:'base',   mode:0, p1:8,  p2:1, rot:0,  zoom:1,   cx:50, cy:50 },
+      { kind:'region', shape:'ellipse', bounds:{x:0.1,y:0.1,w:0.3,h:0.3},
+        source:'original', feather:0,
+        mode:1, p1:30, p2:1, rot:0, zoom:1, cx:50, cy:50 },
+      { kind:'region', shape:'rect', bounds:{x:0.5,y:0.5,w:0.4,h:0.25},
+        source:'crop', feather:0.5,
+        mode:4, p1:20, p2:1, rot:90, zoom:1.5, cx:25, cy:75 }]},
+  ];
+  for (const [i, want] of roundTripCases.entries()) {
+    const ser = want.layers.map(serializeLayer).join(LAYER_SEP);
+    const parsed = ser.split(LAYER_SEP).map(parseLayer);
+    for (const L of parsed) fillLayerDefaults(L);
+    assert(jeq({ activeLayerIndex: want.activeLayerIndex, layers: parsed }, want),
+      `hash round-trip case ${i} (${ser.length} chars)`);
+  }
+
+  // Legacy v1 hash migration — produces a single-base-layer v2 stack.
+  const origHash = location.hash;
+  hashWriteSuppressed = true;
+  history.replaceState(null, '', '#m=2&p1=75&p2=1.5&rot=45.3&zoom=1.25&cx=30.4&cy=70.9');
+  const { state: legacy } = readStateFromHash();
+  history.replaceState(null, '', origHash || '#');
+  hashWriteSuppressed = false;
+  assert(legacy && legacy.layers.length === 1 && legacy.layers[0].kind === 'base',
+    'legacy: single base layer produced');
+  assert(legacy && legacy.layers[0].mode === 2 && legacy.layers[0].p1 === 75 && legacy.layers[0].rot === 45.3,
+    'legacy: params carry across');
+
+  // Agent API mutation round-trip — snapshot live state, exercise add/
+  // reorder/remove, restore.
+  const snapshot = cloneState();
+  const idx = window.__kaleido.addRegion({
+    shape: 'rect', bounds: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+    source: 'original', feather: 0.25,
+  });
+  assert(idx > 0 && state.layers[idx]?.kind === 'region', 'addRegion: region appended and activated');
+  assert(state.activeLayerIndex === idx, 'addRegion: new region is active');
+  window.__kaleido.removeLayer(idx);
+  assert(state.layers.length === snapshot.layers.length, 'removeLayer: length restored');
+  // Invalid bounds are rejected.
+  assert(window.__kaleido.addRegion({ shape: 'rect', bounds: { x: 0, y: 0, w: 0, h: 0.5 } }) === -1,
+    'addRegion: zero-width bounds rejected');
+  // v1 flat patch is rejected loudly — swallow the expected console.error.
+  const origErr = console.error; let v1Rejected = false;
+  console.error = (m) => { if (typeof m === 'string' && m.includes('v1 flat patches')) v1Rejected = true; };
+  window.__kaleido.setState({ mode: 3 });
+  console.error = origErr;
+  assert(v1Rejected, 'setState: v1 flat patch rejected with migration error');
+  // Restore live state (and the hash) so the user sees their original page.
+  state.activeLayerIndex = snapshot.activeLayerIndex;
+  state.layers = snapshot.layers;
+  refreshAfterMutation();
+
+  const pass = results.filter(r => r.ok).length;
+  const fail = results.length - pass;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;bottom:32px;right:10px;background:#000;color:#eee;padding:8px 10px;font:11px monospace;border:1px solid ' + (fail ? '#c66' : '#6c6') + ';z-index:9999;max-width:320px;line-height:1.4';
+  overlay.innerHTML = `<div><b>?debug=1</b>: ${pass}/${results.length} pass</div>` +
+    results.filter(r => !r.ok).map(r => `<div>✗ ${r.msg}</div>`).join('');
+  document.body.appendChild(overlay);
 })();
 </script>
 </body>
