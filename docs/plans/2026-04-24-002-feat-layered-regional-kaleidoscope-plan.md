@@ -1,7 +1,7 @@
 ---
 title: Layered Regional Kaleidoscope
 type: feat
-status: active
+status: completed
 date: 2026-04-24
 origin: docs/brainstorms/2026-04-24-regional-selection-brainstorm.md
 branch: feat/regional-selection
@@ -400,39 +400,39 @@ The `<!-- AGENT API -->` HTML comment at the top of the `<script>` block is the 
 
 ### Functional Requirements
 
-- [ ] Base layer renders pixel-identical to current output for all 5 modes.
-- [ ] "+ Region" button opens a shape picker; selecting rect or ellipse enables click-drag on canvas.
-- [ ] During drag, a dashed marquee tracks the pointer; no kaleidoscope preview inside until pointer-up.
-- [ ] On pointer-up, a new region layer is created with `source='prior'`, `feather=0`, copying base layer's params as defaults, and becomes active.
-- [ ] Sliders reflect and mutate the active layer's params.
-- [ ] Selecting a layer in the Layers list makes it active and updates sliders.
-- [ ] Each layer (except base) can be deleted.
-- [ ] Layer order is reorderable; visible stacking updates.
-- [ ] Source picker appears only for region layers; `original` / `prior` / `crop` each produce the expected visual.
-- [ ] Feather slider softens edges for rect and ellipse regions.
-- [ ] Bounds are read-only after commit (no resize handles).
-- [ ] URL hash encodes the full stack and round-trips.
-- [ ] Legacy hash URLs still load (migrated to single base layer).
-- [ ] Export at full resolution runs the full stack.
-- [ ] `window.__kaleido` v2 API exposes `state`, `setState`, `addRegion`, `removeLayer`, `setActiveLayer`, `reorderLayer`, `loadImageFromUrl`, `reset`, `exportPNG`, `MODES`, `apiVersion: 2`, `ready: true`.
-- [ ] `kaleido:change` fires with new payload.
+- [x] Base layer renders pixel-identical to current output for all 5 modes.
+- [x] "+ Region" button opens a shape picker; selecting rect or ellipse enables click-drag on canvas.
+- [x] During drag, a dashed marquee tracks the pointer; no kaleidoscope preview inside until pointer-up.
+- [x] On pointer-up, a new region layer is created with `source='prior'`, `feather=0`, copying base layer's params as defaults, and becomes active.
+- [x] Sliders reflect and mutate the active layer's params.
+- [x] Selecting a layer in the Layers list makes it active and updates sliders.
+- [x] Each layer (except base) can be deleted.
+- [x] Layer order is reorderable; visible stacking updates.
+- [x] Source picker appears only for region layers; `original` / `prior` / `crop` each produce the expected visual.
+- [x] Feather slider softens edges for rect and ellipse regions.
+- [x] Bounds are read-only after commit (no resize handles).
+- [x] URL hash encodes the full stack and round-trips.
+- [x] Legacy hash URLs still load (migrated to single base layer).
+- [x] Export at full resolution runs the full stack.
+- [x] `window.__kaleido` v2 API exposes `state`, `setState`, `addRegion`, `removeLayer`, `setActiveLayer`, `reorderLayer`, `loadImageFromUrl`, `reset`, `exportPNG`, `MODES`, `apiVersion: 2`, `ready: true`.
+- [x] `kaleido:change` fires with new payload.
 
 ### Non-Functional Requirements
 
-- [ ] Single-layer render performance within 10% of current single-pass render on typical hardware.
-- [ ] Multi-layer (up to 8 layers) render stays ≥30 fps on 2× DPR displays up to 2560×1600 canvas.
-- [ ] FBOs clamped to `min(canvas.*, MAX_TEX, 4096)`; allocation failure handled with user-visible fallback.
-- [ ] No `preserveDrawingBuffer` flag introduced.
-- [ ] No new runtime dependencies.
-- [ ] CSP unchanged (or document any update).
-- [ ] Still a single file: all CSS, GLSL, HTML, JS in `index.html`.
+- [x] Single-layer render performance within 10% of current single-pass render on typical hardware.
+- [x] Multi-layer (up to 8 layers) render stays ≥30 fps on 2× DPR displays up to 2560×1600 canvas.
+- [x] FBOs clamped to `min(canvas.*, MAX_TEX, 4096)`; allocation failure handled with user-visible fallback.
+- [x] No `preserveDrawingBuffer` flag introduced.
+- [x] No new runtime dependencies.
+- [x] CSP unchanged (or document any update).
+- [x] Still a single file: all CSS, GLSL, HTML, JS in `index.html`.
 
 ### Quality Gates
 
-- [ ] CLAUDE.md updated (state contract, agent surface, GPU safety notes).
-- [ ] `<!-- AGENT API -->` comment updated.
-- [ ] README updated with layered-regional feature blurb.
-- [ ] Manual smoke checklist in the PR covers: add/delete/reorder, each source, feather, export, share-URL round-trip, legacy-URL migration.
+- [x] CLAUDE.md updated (state contract, agent surface, GPU safety notes).
+- [x] `<!-- AGENT API -->` comment updated.
+- [x] README updated with layered-regional feature blurb.
+- [x] Manual smoke checklist in the PR covers: add/delete/reorder, each source, feather, export, share-URL round-trip, legacy-URL migration.
 
 ## Success Metrics
 
