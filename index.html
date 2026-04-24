@@ -205,6 +205,16 @@ main.drag-over::after {
 }
 .marquee.ellipse { border-radius: 50%; }
 
+/* Source picker (region-only) */
+.source-picker { display: flex; gap: 6px; flex-wrap: wrap; }
+.source-picker label {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 11px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.source-picker input[type=radio] { accent-color: var(--accent); }
+
 /* Layers list */
 .layers-list { display: flex; flex-direction: column; gap: 2px; }
 .layers-list:empty { display: none; }
@@ -332,6 +342,25 @@ main.drag-over::after {
 
       <div class="hint">Drag to set center · Shift+drag to rotate</div>
     </div>
+
+    <div class="ctrl-group hidden" id="regionCtrls" data-kaleido="region-controls">
+      <div>
+        <div class="lbl-row"><span>Source</span></div>
+        <div class="source-picker">
+          <label><input type="radio" name="layer-source" value="original" data-kaleido="src-original"> Original</label>
+          <label><input type="radio" name="layer-source" value="prior"    data-kaleido="src-prior"> Prior</label>
+          <label><input type="radio" name="layer-source" value="crop"     data-kaleido="src-crop"> Crop</label>
+        </div>
+      </div>
+
+      <div>
+        <div class="lbl-row">
+          <span>Feather</span>
+          <span data-kaleido="val-feather">0%</span>
+        </div>
+        <input type="range" id="feather" data-kaleido="slider-feather" min="0" max="100" value="0">
+      </div>
+    </div>
   </aside>
 
   <main id="stage" data-kaleido="stage">
@@ -426,6 +455,8 @@ uniform float u_cx;
 uniform float u_cy;
 uniform int   u_region_kind;     // 0 base, 1 rect, 2 ellipse
 uniform vec4  u_region;          // x, y, w, h in canvas UV (0..1, y-down)
+uniform int   u_source;          // 0 original, 1 prior, 2 crop
+uniform float u_feather;         // 0..1 fraction of region's min half-extent
 
 const float PI     = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
@@ -436,27 +467,12 @@ float fold(float v, float period) {
   return v < period * 0.5 ? v : period - v;
 }
 
-void main() {
-  vec2 ctr = vec2(u_cx / 100.0 * u_tsz.x,
-                  u_cy / 100.0 * u_tsz.y);
-
-  // Uniform scale so neither axis is stretched.
-  float uniScale = min(u_tsz.x / u_csz.x, u_tsz.y / u_csz.y);
-
-  // Canvas pixel → image-space offset from centre.
-  // gl_FragCoord.y=0 is canvas bottom; image y=0 is top → negate y.
-  vec2 d = vec2(
-     gl_FragCoord.x - u_csz.x * 0.5,
-    -(gl_FragCoord.y - u_csz.y * 0.5)) * uniScale / u_zoom;
-
-  float rad = radians(u_rot);
-  float c   = cos(rad), s = sin(rad);
-  d = vec2(d.x*c - d.y*s, d.x*s + d.y*c);
-
-  float mdim = min(u_tsz.x, u_tsz.y);
-  float ts   = u_p1 / 100.0 * mdim;   // tile size (unused for radial)
-  vec2 off;
-
+// Mode-specific tile unfolding. d is the offset from centre in source-texture
+// pixels; srcSz is the texture's pixel dimensions.
+vec2 kaleidoscopeOffset(vec2 d, vec2 srcSz) {
+  float mdim = min(srcSz.x, srcSz.y);
+  float ts   = u_p1 / 100.0 * mdim;
+  vec2  off;
   if (u_mode == 0) {
     // Radial — u_p1=1 is passthrough (shows original so user can see the sampled region)
     if (u_p1 < 2.0) {
@@ -471,21 +487,15 @@ void main() {
       if (tn > h) tn = seg - tn;
       off = r * vec2(cos(tn), sin(tn));
     }
-
   } else if (u_mode == 1) {
-    // Rectangle
     float th = ts * u_asp;
     off = vec2(fold(d.x, ts), fold(d.y, th));
-
   } else if (u_mode == 2) {
-    // Triangle 45-45-90
     float tx = fold(d.x, ts);
     float ty = fold(d.y, ts);
     if (tx < ty) { float t = tx; tx = ty; ty = t; }
     off = vec2(tx, ty);
-
   } else if (u_mode == 3) {
-    // Triangle 60-60-60 (equilateral)
     float vl = d.y * 2.0 / (ts * SQRT3);
     float ul = d.x / ts - vl * 0.5;
     float uf = fract(ul);
@@ -495,11 +505,8 @@ void main() {
       vf = 1.0 - uf;
       uf = tu;
     }
-    off = vec2(uf * ts + vf * ts * 0.5,
-               vf * ts * SQRT3 * 0.5);
-
+    off = vec2(uf * ts + vf * ts * 0.5, vf * ts * SQRT3 * 0.5);
   } else {
-    // Triangle 30-60-90
     float th = ts * SQRT3;
     float tx = fold(d.x, ts);
     float ty = fold(d.y, th);
@@ -510,37 +517,96 @@ void main() {
     if (dt > 0.0) { tx -= 2.0*A*dt/AB2; ty -= 2.0*B*dt/AB2; }
     off = vec2(tx, ty);
   }
+  return off;
+}
 
-  // CLAMP_TO_EDGE on the texture handles out-of-range UVs; no extra clamp needed.
-  vec2 uv = (ctr + off) / u_tsz;
-  vec4 tiled = texture2D(u_tex, uv);
+// Sample this layer's kaleidoscope output for the current fragment. The three
+// source modes share the same kaleidoscope math but address different texture
+// and coordinate spaces: original samples u_tex in image pixels; prior samples
+// the previous composite in canvas pixels; crop treats the region itself as
+// the virtual canvas+source, with cx/cy interpreted region-locally.
+vec4 sampleSource() {
+  float rad = radians(u_rot);
+  float co  = cos(rad), si = sin(rad);
+
+  if (u_source == 0) {
+    // Original image (y-axis flip because image is y-down, fragCoord is y-up)
+    vec2 ctr = vec2(u_cx / 100.0 * u_tsz.x, u_cy / 100.0 * u_tsz.y);
+    float uniScale = min(u_tsz.x / u_csz.x, u_tsz.y / u_csz.y);
+    vec2 d = vec2( gl_FragCoord.x - u_csz.x * 0.5,
+                  -(gl_FragCoord.y - u_csz.y * 0.5)) * uniScale / u_zoom;
+    d = vec2(d.x * co - d.y * si, d.x * si + d.y * co);
+    vec2 off = kaleidoscopeOffset(d, u_tsz);
+    return texture2D(u_tex, (ctr + off) / u_tsz);
+  }
+
+  if (u_source == 1) {
+    // Prior composite — canvas-space sampling, no image-scale adjustment.
+    // Both source and destination live on the canvas grid.
+    vec2 ctr = vec2(u_cx / 100.0 * u_csz.x, u_cy / 100.0 * u_csz.y);
+    vec2 d = vec2( gl_FragCoord.x - u_csz.x * 0.5,
+                  -(gl_FragCoord.y - u_csz.y * 0.5)) / u_zoom;
+    d = vec2(d.x * co - d.y * si, d.x * si + d.y * co);
+    vec2 off = kaleidoscopeOffset(d, u_csz);
+    vec2 uv = (ctr + off) / u_csz;                // y-up UV into prev FBO
+    return texture2D(u_prev_tex, uv);
+  }
+
+  // u_source == 2: crop. The region acts as both the virtual canvas (the frame
+  // the kaleidoscope tiles into) and the virtual source (a patch of the prior
+  // composite). cx/cy are region-local percentages.
+  vec2 regionPx = u_region.zw * u_csz;
+  vec2 regionCtr = vec2(
+    (u_region.x + u_region.z * 0.5) * u_csz.x,
+    (1.0 - u_region.y - u_region.w * 0.5) * u_csz.y  // region.y is y-down; centre in y-up
+  );
+  vec2 d = vec2( gl_FragCoord.x - regionCtr.x,
+                -(gl_FragCoord.y - regionCtr.y)) / u_zoom;
+  d = vec2(d.x * co - d.y * si, d.x * si + d.y * co);
+  vec2 off = kaleidoscopeOffset(d, regionPx);
+  vec2 ctrRegion = vec2(u_cx / 100.0 * regionPx.x, u_cy / 100.0 * regionPx.y);
+  vec2 uvRegion  = (ctrRegion + off) / regionPx;   // 0..1 inside region, y-down
+  // Fold into [0,1] via symmetric reflect so the tile wraps without leaking
+  // beyond the region bounds.
+  vec2 reflected = vec2(
+    1.0 - abs(1.0 - mod(uvRegion.x, 2.0)),
+    1.0 - abs(1.0 - mod(uvRegion.y, 2.0))
+  );
+  vec2 uvCanvas = u_region.xy + reflected * u_region.zw;       // y-down canvas UV
+  vec2 sampleUV = vec2(uvCanvas.x, 1.0 - uvCanvas.y);          // flip to y-up FBO
+  return texture2D(u_prev_tex, sampleUV);
+}
+
+void main() {
+  vec4 tiled = sampleSource();
 
   if (u_region_kind == 0) {
     gl_FragColor = tiled;
-  } else {
-    // Compose this layer's kaleidoscope inside its region with the prior
-    // composite showing through outside. u_region bounds are stored in
-    // canvas UV with origin top-left (matching the marquee drag); gl_FragCoord
-    // is y-up, so we flip y for the region check but keep the prev_tex sample
-    // in native y-up space.
-    vec2 frag_uv = gl_FragCoord.xy / u_csz;
-    vec2 chk = vec2(frag_uv.x, 1.0 - frag_uv.y);
-    float m;
-    if (u_region_kind == 1) {
-      vec2 rmin = u_region.xy;
-      vec2 rmax = u_region.xy + u_region.zw;
-      bool inside = (chk.x >= rmin.x && chk.x <= rmax.x &&
-                     chk.y >= rmin.y && chk.y <= rmax.y);
-      m = inside ? 1.0 : 0.0;
-    } else {
-      vec2 centre = u_region.xy + u_region.zw * 0.5;
-      vec2 halfExt = u_region.zw * 0.5;
-      vec2 d2 = (chk - centre) / halfExt;
-      m = (dot(d2, d2) <= 1.0) ? 1.0 : 0.0;
-    }
-    vec4 backdrop = texture2D(u_prev_tex, frag_uv);
-    gl_FragColor = mix(backdrop, tiled, m);
+    return;
   }
+
+  // Region mask: 1 inside, 0 outside, smoothstep falloff of width u_feather
+  // (fraction of min half-extent for rect, fraction of radius for ellipse).
+  vec2 frag_uv = gl_FragCoord.xy / u_csz;
+  vec2 chk = vec2(frag_uv.x, 1.0 - frag_uv.y);   // region bounds are y-down
+  vec2 centre  = u_region.xy + u_region.zw * 0.5;
+  vec2 halfExt = u_region.zw * 0.5;
+  float m;
+  if (u_region_kind == 1) {
+    // Rect signed distance: max(|p - c| - halfExt); negative inside.
+    vec2 e = abs(chk - centre) - halfExt;
+    float sdf = max(e.x, e.y);
+    float f = max(u_feather * min(halfExt.x, halfExt.y), 1e-5);
+    m = smoothstep(f * 0.5, -f * 0.5, sdf);
+  } else {
+    // Ellipse: r = length((p - c)/halfExt); inside is r < 1.
+    vec2 rel = (chk - centre) / halfExt;
+    float r = length(rel);
+    float halfF = max(u_feather * 0.5, 1e-5);
+    m = smoothstep(1.0 + halfF, 1.0 - halfF, r);
+  }
+  vec4 backdrop = texture2D(u_prev_tex, frag_uv);
+  gl_FragColor = mix(backdrop, tiled, m);
 }
 `;
 
@@ -579,7 +645,7 @@ const blitProg = mkProgram(BLIT_VERT, BLIT_FRAG);
 
 const mainU = Object.fromEntries(
   ['u_tex','u_prev_tex','u_tsz','u_csz','u_mode','u_p1','u_asp','u_rot','u_zoom',
-   'u_cx','u_cy','u_region_kind','u_region']
+   'u_cx','u_cy','u_region_kind','u_region','u_source','u_feather']
   .map(n => [n, gl.getUniformLocation(mainProg, n)])
 );
 const blitU = { u_tex: gl.getUniformLocation(blitProg, 'u_tex') };
@@ -669,6 +735,9 @@ const fileIn = $('fileIn'), modeEl = $('mode'), stage = $('stage'), empty = $('e
 const statusEl = $('status'), rowP2 = $('rowP2'), lblP1 = $('lblP1');
 const btnAddRegion = $('btnAddRegion'), shapePicker = $('shapePicker');
 const btnShapeRect = $('btnShapeRect'), btnShapeEllipse = $('btnShapeEllipse'), btnCancelDraw = $('btnCancelDraw');
+const regionCtrls = $('regionCtrls'), featherEl = $('feather');
+const featherValEl = document.querySelector('[data-kaleido="val-feather"]');
+const sourceRadios = document.querySelectorAll('input[name="layer-source"]');
 
 // ─── Mode + slider config ────────────────────────────────────────────────────
 const TILE = { label: 'Tile Size', min: 5, max: 200, def: 50, fmt: v => v + '%' };
@@ -732,6 +801,11 @@ function syncStateFromDom() {
   const L = activeLayer();
   L.mode = parseInt(modeEl.value, 10) || 0;
   for (const k of SLIDER_KEYS) L[k] = +SLIDERS[k].el.value / SLIDERS[k].scale;
+  if (L.kind === 'region') {
+    const checked = document.querySelector('input[name="layer-source"]:checked');
+    if (checked) L.source = checked.value;
+    L.feather = Math.max(0, Math.min(1, +featherEl.value / 100));
+  }
 }
 
 function syncDomFromState() {
@@ -740,6 +814,12 @@ function syncDomFromState() {
   applyModeUI(L.mode);
   for (const k of SLIDER_KEYS) {
     SLIDERS[k].el.value = Math.round(L[k] * SLIDERS[k].scale);
+  }
+  const isRegion = L.kind === 'region';
+  regionCtrls.classList.toggle('hidden', !isRegion);
+  if (isRegion) {
+    for (const r of sourceRadios) r.checked = (r.value === (L.source || 'prior'));
+    featherEl.value = Math.round((L.feather || 0) * 100);
   }
 }
 
@@ -755,6 +835,9 @@ function updateLabels() {
   const L = activeLayer();
   for (const k of SLIDER_KEYS) {
     SLIDERS[k].valEl.textContent = SLIDERS[k].fmt(L[k], L.mode);
+  }
+  if (L.kind === 'region') {
+    featherValEl.textContent = Math.round((L.feather || 0) * 100) + '%';
   }
 }
 
@@ -776,9 +859,13 @@ function setMainUniformsForLayer(layer, rtW, rtH) {
     const b = layer.bounds;
     gl.uniform1i(mainU.u_region_kind, kind);
     gl.uniform4f(mainU.u_region, b.x, b.y, b.w, b.h);
+    gl.uniform1i(mainU.u_source, layer.source === 'original' ? 0 : layer.source === 'crop' ? 2 : 1);
+    gl.uniform1f(mainU.u_feather, layer.feather || 0);
   } else {
     gl.uniform1i(mainU.u_region_kind, 0);
     gl.uniform4f(mainU.u_region, 0, 0, 0, 0);
+    gl.uniform1i(mainU.u_source, 0);
+    gl.uniform1f(mainU.u_feather, 0);
   }
 }
 
@@ -1303,6 +1390,11 @@ modeEl.addEventListener('change', () => {
   SLIDERS.p1.el.value = MODES[newMode].def;
   scheduleRender();
 });
+
+// Region-only controls share the same scheduleRender pathway — their values
+// are picked up by syncStateFromDom on the next frame.
+featherEl.addEventListener('input', scheduleRender);
+for (const r of sourceRadios) r.addEventListener('change', scheduleRender);
 
 // ─── Reset ───────────────────────────────────────────────────────────────────
 // Resets the full stack to a fresh single-base-layer state, matching the plan
